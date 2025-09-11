@@ -3,13 +3,14 @@ import zipfile
 import yaml
 import pandas as pd
 import matplotlib.pyplot as plt
+import argparse
+from PlayerStats import *
+from StatsRecorder import *
+from BasketballAnalyser import *
+from YOLO_model import *
+import torch
 
-# --- CONFIGURATION ---
-ZIP_FILE_PATH = r"C:\projects\ImageProcessingBBall\Basketball Players.v25i.yolov11.zip"
-EXTRACT_TO_DIRECTORY = "yolo_dataset"
-
-
-# ---------------------
+BBALL_DATASET = "yolo_dataset"
 
 def unzip_dataset(zip_path, extract_path):
     """Unzips the dataset file."""
@@ -27,11 +28,11 @@ def unzip_dataset(zip_path, extract_path):
         return False
 
 
-def analyze_and_plot_split(split_name, label_dir, class_names):
+def analyse_and_plot_split(split_name, label_dir, class_names):
     """
-    Analyzes class distribution for a single data split and generates a plot.
+    Analyses class distribution for a single data split and generates a plot.
     """
-    print(f"\n--- Analyzing Class Distribution for '{split_name}' set ---")
+    print(f"\nAnalysing Class Distribution for '{split_name}' set")
 
     if not os.path.exists(label_dir):
         print(f"Warning: Label directory not found at '{label_dir}'. Skipping.")
@@ -73,9 +74,9 @@ def analyze_and_plot_split(split_name, label_dir, class_names):
     plt.show()
 
 
-def analyze_yolo_dataset(dataset_dir):
+def analyse_yolo_dataset(dataset_dir):
     """
-    Analyzes the unzipped YOLO dataset, splitting the analysis by train/val/test.
+    Analyses the unzipped YOLO dataset, splitting the analysis by train/val/test.
     """
     yaml_path = None
     for root, dirs, files in os.walk(dataset_dir):
@@ -115,7 +116,7 @@ def analyze_yolo_dataset(dataset_dir):
                 print(f"\nFound {n_img} images and {n_lbl} labels in '{split_name}' set.")
 
                 # Call the helper function to perform the detailed analysis and plotting
-                analyze_and_plot_split(split_name, label_dir, class_names)
+                analyse_and_plot_split(split_name, label_dir, class_names)
             else:
                 print(f"\nWarning: No image directory found for '{split_name}' at '{image_dir}'")
         else:
@@ -123,5 +124,26 @@ def analyze_yolo_dataset(dataset_dir):
 
 
 if __name__ == "__main__":
-    if unzip_dataset(ZIP_FILE_PATH, EXTRACT_TO_DIRECTORY):
-        analyze_yolo_dataset(EXTRACT_TO_DIRECTORY)
+    # print(torch.cuda.is_available())
+    train_basketball_model()
+    # parser = argparse.ArgumentParser(description="Basketball Game Analyzer using YOLO and Ultralytics Trackers")
+    # parser.add_argument('--model', type=str, required=True, help="Path to the YOLO .pt model file.")
+    # parser.add_argument('--source', type=str, required=True, help="Path to the video file or camera index (e.g., '0').")
+    # parser.add_argument('--tracker', type=str, default='bytetrack.yaml',
+    #                     help="Tracker configuration file (e.g., 'bytetrack.yaml' or 'botsort.yaml').")
+    # parser.add_argument('--conf', type=float, default=0.4, help="Confidence threshold for object detection.")
+    # parser.add_argument('--iou', type=float, default=0.7, help="IOU threshold for NMS.")
+    #
+    # args = parser.parse_args()
+    #
+    # try:
+    #     analyzer = BasketballAnalyser(
+    #         model_path=args.model,
+    #         video_source=args.source,
+    #         tracker_config=args.tracker,
+    #         conf_thresh=args.conf,
+    #         iou_thresh=args.iou
+    #     )
+    #     analyzer.process_video()
+    # except Exception as e:
+    #     print(f"An error occurred: {e}")
