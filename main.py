@@ -125,25 +125,22 @@ def analyse_yolo_dataset(dataset_dir):
 
 if __name__ == "__main__":
     # print(torch.cuda.is_available())
-    train_basketball_model()
-    # parser = argparse.ArgumentParser(description="Basketball Game Analyzer using YOLO and Ultralytics Trackers")
-    # parser.add_argument('--model', type=str, required=True, help="Path to the YOLO .pt model file.")
-    # parser.add_argument('--source', type=str, required=True, help="Path to the video file or camera index (e.g., '0').")
-    # parser.add_argument('--tracker', type=str, default='bytetrack.yaml',
-    #                     help="Tracker configuration file (e.g., 'bytetrack.yaml' or 'botsort.yaml').")
-    # parser.add_argument('--conf', type=float, default=0.4, help="Confidence threshold for object detection.")
-    # parser.add_argument('--iou', type=float, default=0.7, help="IOU threshold for NMS.")
-    #
-    # args = parser.parse_args()
-    #
-    # try:
-    #     analyzer = BasketballAnalyser(
-    #         model_path=args.model,
-    #         video_source=args.source,
-    #         tracker_config=args.tracker,
-    #         conf_thresh=args.conf,
-    #         iou_thresh=args.iou
-    #     )
-    #     analyzer.process_video()
-    # except Exception as e:
-    #     print(f"An error occurred: {e}")
+    # train_basketball_model()
+    MODEL_PATH = "Basketball_Detection/yolov12n.pt_200_epochs_16_batch_size/weights/best.pt"
+    VIDEO_SOURCE = "https://www.youtube.com/watch?v=d_JI-QGcpgI"  # Example YouTube URL
+
+    # Default values that were in the parser
+    TRACKER_CONFIG = 'bytetrack.yaml'
+    CONF_THRESH = 0.4
+    IOU_THRESH = 0.7
+    try:
+        analyser = BasketballAnalyser(
+            model_path=MODEL_PATH,
+            video_source=VIDEO_SOURCE,
+            tracker_config=TRACKER_CONFIG,
+            conf_thresh=CONF_THRESH,
+            iou_thresh=IOU_THRESH
+        )
+        analyser.process_video()
+    except Exception as e:
+        print(f"An error occurred: {e}")
