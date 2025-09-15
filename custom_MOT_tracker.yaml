@@ -1,0 +1,10 @@
+# Ultralytics YOLO 🚀, AGPL-3.0 license
+# Custom ByteTrack tracker settings for Basketball Analysis
+
+tracker_type: botsort # The type of tracker
+track_high_thresh: 0.5  # High-confidence detection threshold for first association
+track_low_thresh: 0.1   # Low-confidence detection threshold for second association
+new_track_thresh: 0.6   # Confidence threshold for creating a new track
+track_buffer: 240       # Buffer size (in frames) for a track being lost. Increased from 30 to 120.
+match_thresh: 0.8       # IOU threshold for matching tracks
+# See https://github.com/ifzhang/ByteTrack for more information

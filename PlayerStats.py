@@ -10,6 +10,9 @@ class PlayerStats:
         self.last_update_time = None
         # Use a double-ended queue to store recent positions for drawing a trail
         self.positions = deque(maxlen=30)
+        self.score = 0
+        self.last_seen_frame = 0
+        self.last_bbox = None
 
     def update_position(self, bbox_center):
         """Adds the latest bounding box center to the player's position history."""
