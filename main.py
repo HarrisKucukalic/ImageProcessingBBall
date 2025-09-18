@@ -126,20 +126,14 @@ def analyse_yolo_dataset(dataset_dir):
 if __name__ == "__main__":
     # print(torch.cuda.is_available())
     # train_basketball_model()
-    MODEL_PATH = "Basketball_Detection/yolov12n.pt_200_epochs_16_batch_size/weights/best.pt"
-    VIDEO_SOURCE = "https://www.youtube.com/watch?v=d_JI-QGcpgI"  # Example YouTube URL
-
-    # Default values that were in the parser
-    TRACKER_CONFIG = 'bytetrack.yaml'
-    CONF_THRESH = 0.4
-    IOU_THRESH = 0.7
+    MODEL_PATH = "Basketball_Detection/yolov12n.pt_200_epochs_64_batch_size/weights/best.pt"
+    VIDEO_SOURCE = "https://www.youtube.com/watch?v=d_JI-QGcpgI"
+    START_TIME = "0:00"
     try:
         analyser = BasketballAnalyser(
             model_path=MODEL_PATH,
             video_source=VIDEO_SOURCE,
-            tracker_config=TRACKER_CONFIG,
-            conf_thresh=CONF_THRESH,
-            iou_thresh=IOU_THRESH
+            start_time=START_TIME
         )
         analyser.process_video()
     except Exception as e:

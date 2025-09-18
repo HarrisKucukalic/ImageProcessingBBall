@@ -1,214 +1,239 @@
+import cv2
+import time
+import numpy as np
 from ultralytics import YOLO
 from StatsRecorder import *
-import yt_dlp
+from Team import *
 
-CLASS_COLORS = {
-    'player': (0, 255, 0),       # Green
-    'basketball': (255, 165, 0),  # Orange
-    'rim': (0, 0, 255)            # Red
-}
-# Helper function for RE-ID
-def get_bbox_center(bbox):
-    """Calculates the center of a bounding box."""
-    return (int((bbox[0] + bbox[2]) / 2), int((bbox[1] + bbox[3]) / 2))
+# Try to import yt_dlp
+try:
+    import yt_dlp
+except ImportError:
+    yt_dlp = None
+
+# Centralised definitions for class IDs
+PLAYER_CLASS_ID = 3
+BALL_CLASS_ID = 0
+
+
+# --- HELPER FUNCTION ---
+def get_bbox_centre(bbox):
+    """Calculates the centre of a bounding box."""
+    return int((bbox[0] + bbox[2]) / 2), int((bbox[1] + bbox[3]) / 2)
+
 
 class BasketballAnalyser:
     """
-    Main class to orchestrate the detection, tracking, and analysis process.
+    Main class to orchestrate the detection, tracking, and team-based analysis process.
     """
 
-    def __init__(self, model_path, video_source, tracker_config='custom_MOT_tracker.yaml.yaml', conf_thresh=0.5, iou_thresh=0.7):
-        # Initialise YOLO model
-        print(f"Loading YOLO model from: {model_path}")
+    def __init__(self, model_path, video_source, tracker_config='botsort.yaml', conf_thresh=0.5, iou_thresh=0.7,
+                 start_time="0:00"):
         self.model = YOLO(model_path)
-        # Store video source and config
         self.video_source = video_source
         self.tracker_config = tracker_config
         self.conf_thresh = conf_thresh
         self.iou_thresh = iou_thresh
-        # Initialise statistics recorder
         self.stats_recorder = None
         self.frame_number = 0
-        # How close (in pixels) a new detection must be to a lost player to be re-linked
-        self.reid_distance_threshold = 150
-        # How many frames a player can be lost before we consider re-linking them
-        self.reid_frame_threshold = 60
+        self.start_time = start_time
+        self.teams_initialised = False
+        # The threshold for determining if a jersey is light or dark (0-255)
+        self.lightness_threshold = 130
+        # Store a short history of recent, valid ball positions
+        self.ball_position_history = deque(maxlen=4)
+        # The maximum distance (in pixels) the ball can travel between frames
+        self.max_ball_movement = 50
+    def _initialise_teams(self):
+        """
+        Initialises the two teams as 'Light' and 'Dark'.
+        """
+        print("Initialising teams as Light vs. Dark...")
+        # BGR format for OpenCV
+        team_a_colour = (0, 255, 0)  # Green for the 'Light' team
+        team_b_colour = (0, 0, 255)  # Red Grey for the 'Dark' team
 
-    def _draw_tracks(self, frame, tracks, player_stats):
-        """Draws dots and labels only for players and the ball."""
-        for track in tracks:
-            x1, y1, x2, y2, track_id, class_id, conf = track
-            x1, y1, x2, y2 = map(int, [x1, y1, x2, y2])
-            track_id, class_id = int(track_id), int(class_id)
-            center_x = (x1 + x2) // 2
-            center_y = (y1 + y2) // 2
-            class_name = CLASS_NAMES.get(class_id, 'unknown')
-            color = CLASS_COLORS.get(class_name, (255, 255, 255))
+        self.stats_recorder.teams['A'] = Team('A', team_a_colour)
+        self.stats_recorder.teams['B'] = Team('B', team_b_colour)
+        self.teams_initialised = True
+        print(f"Teams initialised. Team A (Light): White, Team B (Dark): Grey")
 
-            # Only draw dots for players and the ball
-            if class_id == PLAYER_CLASS_ID or class_id == BALL_CLASS_ID:
-                cv2.circle(frame, (center_x, center_y), 5, color, -1)
+    def _get_player_team_assignment(self, frame, bbox):
+        """
+        Determines team assignment by analysing the average lightness of the jersey,
+        focusing only on the torso to avoid bias from skin tone.
+        """
+        x1, y1, x2, y2 = map(int, bbox)
+        if x1 >= x2 or y1 >= y2:
+            return None
 
-            # Only draw a text label if the object is a player
-            if class_id == PLAYER_CLASS_ID:
-                # Get the score for the current player from the stats object
-                score = player_stats[track_id].score if track_id in player_stats else 0
-                label = f"P-{track_id} S:{score}"
-                # Adjust position and font size for the new, longer label
-                cv2.putText(frame, label, (center_x - 25, center_y - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+        # --- CROP TO TORSO REGION ---
+        # This focuses the analysis on the jersey and ignores head, arms, and legs.
+        box_width = x2 - x1
+        box_height = y2 - y1
+
+        # Define a region for the torso (e.g., middle 50% horizontally, upper-middle vertically)
+        torso_x1 = x1 + int(box_width * 0.35)
+        torso_x2 = x1 + int(box_width * 0.65)
+        torso_y1 = y1 + int(box_height * 0.35)
+        torso_y2 = y1 + int(box_height * 0.45)  # Avoid shorts
+
+        # Crop the frame to this torso region
+        player_img = frame[torso_y1:torso_y2, torso_x1:torso_x2]
+        # --- END OF CROPPING LOGIC ---
+
+        if player_img.size == 0:
+            return None
+
+        # Convert the player image to grayscale to analyse lightness
+        gray_img = cv2.cvtColor(player_img, cv2.COLOR_BGR2GRAY)
+
+        # Calculate the average pixel intensity of the torso
+        average_intensity = np.mean(gray_img)
+
+        # Assign to the 'Light' or 'Dark' team based on the threshold
+        if average_intensity > self.lightness_threshold:
+            return 'A'  # Team A is 'Light'
+        else:
+            return 'B'  # Team B is 'Dark'
+
+    def _track_ball(self, detections):
+        """
+        Refines ball tracking by removing outliers and interpolating short gaps.
+        This logic is adapted from the BallTracker class you provided.
+        """
+        # 1. Find the highest confidence ball detection in the current frame
+        ball_detections = [d for d in detections if int(d[6]) == BALL_CLASS_ID]
+        if not ball_detections:
+            current_ball_centre = None
+        else:
+            best_ball = max(ball_detections, key=lambda x: x[5])  # Index 5 is confidence
+            current_ball_centre = get_bbox_centre(best_ball[0:4])
+
+        # 2. Outlier Rejection: Check if the new position is plausible
+        if current_ball_centre and self.ball_position_history:
+            last_known_pos = self.ball_position_history[-1]
+            distance = np.linalg.norm(np.array(current_ball_centre) - np.array(last_known_pos))
+
+            # If the ball has moved an impossibly large distance, treat it as a misdetection
+            if distance > self.max_ball_movement:
+                current_ball_centre = None  # Discard the outlier
+
+        # 3. Interpolation: If no valid ball is found, predict its position
+        if not current_ball_centre and len(self.ball_position_history) >= 2:
+            # Simple linear extrapolation
+            last_pos = self.ball_position_history[-1]
+            prev_pos = self.ball_position_history[-2]
+            velocity = (np.array(last_pos) - np.array(prev_pos))
+            # Predict the next position based on the last known velocity
+            predicted_pos = tuple(map(int, np.array(last_pos) + velocity))
+            return predicted_pos
+
+        # 4. Update History: If we have a valid position, update the history
+        if current_ball_centre:
+            self.ball_position_history.append(current_ball_centre)
+            return current_ball_centre
+
+        return None  # Return None if no ball can be tracked
+
+    def _draw_tracks(self, frame, current_player_ids):
+        """Draws dots and labels for players, colour-coded by team."""
+        if not self.teams_initialised: return frame
+
+        for player_id, stats in self.stats_recorder.player_stats.items():
+            if player_id in current_player_ids and stats.team_id and stats.positions:
+                team = self.stats_recorder.teams[stats.team_id]
+                dot_colour = team.primary_colour
+                centre_x, centre_y = stats.positions[-1]
+                cv2.circle(frame, (centre_x, centre_y), 7, dot_colour, -1)
+
+        # Draw the refined ball position
+        if self.stats_recorder.ball_position:
+            ball_x, ball_y = map(int, self.stats_recorder.ball_position)
+            cv2.circle(frame, (ball_x, ball_y), 7, (255, 165, 0), -1)
+
         return frame
 
     def process_video(self):
-        """
-        Processes the video source, performs object tracking, and displays the results.
-        """
+        """Processes the video, identifies teams, and tracks players."""
         video_url = self.video_source
         video_fps = 0
+
         if 'youtube.com' in self.video_source or 'youtu.be' in self.video_source:
-            if yt_dlp is None:
-                print("\nError: yt_dlp is not installed. Please run 'pip install yt_dlp' to process YouTube videos.\n")
-                return
             try:
-                print("YouTube URL detected, extracting direct video link...")
-                ydl_opts = {'format': 'best[ext=mp4][height<=1080]'}
+                ydl_opts = {'format': 'best[ext=mp4][height<=1080]', 'noplaylist': True}
                 with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                     info = ydl.extract_info(self.video_source, download=False)
-                    video_url = info['url']
-                    video_fps = info.get('fps', 0)
+                    video_url, video_fps = info['url'], info.get('fps', 0)
             except Exception as e:
-                print(f"Error extracting YouTube URL: {e}")
-                return
+                return print(f"Error extracting YouTube URL: {e}")
 
         cap = cv2.VideoCapture(video_url)
-        if not cap.isOpened():
-            print(f"OpenCV Error: Could not open video source: {video_url}")
-            return
+        if not cap.isOpened(): return print("Error: Could not open video source.")
 
-        # If FPS wasn't retrieved from metadata (e.g., not a YouTube video), get it from OpenCV
-        if video_fps == 0:
-            video_fps = cap.get(cv2.CAP_PROP_FPS)
+        if video_fps == 0: video_fps = cap.get(cv2.CAP_PROP_FPS)
+        if video_fps == 0: video_fps = 30
 
-        # If FPS is still 0, default to 30
-        if video_fps == 0:
-            print("Warning: Could not determine video FPS. Defaulting to 30.")
-            video_fps = 30
-
-        frame_duration = 1 / video_fps
         self.stats_recorder = StatsRecorder(video_fps)
-
-        # Create a resizable window
         cv2.namedWindow("Basketball Analysis", cv2.WINDOW_NORMAL)
-        cv2.resizeWindow("Basketball Analysis", 1280, 720)  # Set a larger default size
+        cv2.resizeWindow("Basketball Analysis", 1280, 720)
 
-        start_time = time.time()
-        frame_count = 0
+        if self.start_time != "0:00":
+            try:
+                parts = list(map(int, self.start_time.split(':')))
+                minutes, seconds = (parts[0], parts[1]) if len(parts) == 2 else (0, 0)
+                start_seconds = (minutes * 60) + seconds
+                if start_seconds > 0:
+                    start_frame = int(start_seconds * video_fps)
+                    cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
+                    self.frame_number = start_frame
+            except ValueError:
+                print("Invalid start time format. Defaulting to beginning.")
 
         try:
             while cap.isOpened():
-                self.frame_number += 1
-                loop_start = time.time()
-
                 ret, frame = cap.read()
                 if not ret: break
+                self.frame_number += 1
 
-                annotated_frame = frame.copy()
+                if not self.teams_initialised:
+                    self._initialise_teams()
 
-                results_list = self.model.track(source=frame, conf=self.conf_thresh, iou=self.iou_thresh,
-                                                tracker=self.tracker_config, persist=True, verbose=False)
-                results = results_list[0]
+                results = \
+                self.model.track(source=frame, conf=self.conf_thresh, iou=self.iou_thresh, tracker=self.tracker_config,
+                                 persist=True, verbose=False)[0]
 
                 if results.boxes.id is not None:
-                    detections_with_ids = results.boxes.data.cpu().numpy()
+                    detections = results.boxes.data.cpu().numpy()
+                    current_player_ids = {int(d[4]) for d in detections if int(d[6]) == PLAYER_CLASS_ID}
+                    # 1. Get the refined ball position
+                    refined_ball_pos = self._track_ball(detections)
 
-                    # Custom RE-ID Logic ---
+                    # 2. Update the StatsRecorder with all detections, then overwrite the ball position
+                    self.stats_recorder.update(detections)
+                    self.stats_recorder.ball_position = refined_ball_pos
 
-                    # Update memory for all currently tracked roster players
-                    roster_ids = set(self.stats_recorder.player_stats.keys())
-                    for d in detections_with_ids:
-                        track_id = int(d[4])
-                        if track_id in roster_ids:
-                            self.stats_recorder.player_stats[track_id].last_seen_frame = self.frame_number
-                            self.stats_recorder.player_stats[track_id].last_bbox = d[0:4]
+                    new_detections = [d for d in detections if int(d[6]) == PLAYER_CLASS_ID and int(
+                        d[4]) not in self.stats_recorder.player_stats]
 
-                    # Identify new players and recently lost roster players
-                    current_player_detections = {int(d[4]): d for d in detections_with_ids if
-                                                 int(d[6]) == PLAYER_CLASS_ID}
-                    current_player_ids = set(current_player_detections.keys())
+                    for new_player_detection in new_detections:
+                        new_player_id = int(new_player_detection[4])
+                        player_bbox = new_player_detection[0:4]
 
-                    new_unrostered_ids = {pid for pid in current_player_ids if pid not in roster_ids}
-                    lost_roster_ids = {rid for rid in roster_ids if rid not in current_player_ids}
+                        assigned_team = self._get_player_team_assignment(frame, player_bbox)
+                        if assigned_team:
+                            self.stats_recorder.add_player(new_player_id, assigned_team)
 
-                    # Attempt to re-link lost players
-                    if new_unrostered_ids and lost_roster_ids:
-                        ids_to_relink = {}
-                        for new_id in new_unrostered_ids:
-                            new_bbox = current_player_detections[new_id][0:4]
-                            new_center = get_bbox_center(new_bbox)
-
-                            best_match_id = -1
-                            min_dist = float('inf')
-
-                            for lost_id in lost_roster_ids:
-                                player_stat = self.stats_recorder.player_stats[lost_id]
-                                # Check if the player was lost recently
-                                if self.frame_number - player_stat.last_seen_frame < self.reid_frame_threshold:
-                                    lost_center = get_bbox_center(player_stat.last_bbox)
-                                    dist = np.linalg.norm(np.array(new_center) - np.array(lost_center))
-
-                                    if dist < self.reid_distance_threshold and dist < min_dist:
-                                        min_dist = dist
-                                        best_match_id = lost_id
-
-                            if best_match_id != -1:
-                                ids_to_relink[new_id] = best_match_id
-
-                        # Apply the re-links to the main detection list
-                        for i in range(len(detections_with_ids)):
-                            track_id = int(detections_with_ids[i][4])
-                            if track_id in ids_to_relink:
-                                detections_with_ids[i][4] = ids_to_relink[track_id]  # Re-assign the ID
-
-                    # Filter players to maintain a roster of 10 on the court
-                    # (This logic runs after re-linking to ensure roster stability)
-                    known_player_ids = set(self.stats_recorder.player_stats.keys())
-                    player_detections = [d for d in detections_with_ids if int(d[6]) == PLAYER_CLASS_ID]
-                    other_detections = [d for d in detections_with_ids if int(d[6]) != PLAYER_CLASS_ID]
-
-                    player_detections.sort(key=lambda x: x[5], reverse=True)
-
-                    known_players_in_frame = [p for p in player_detections if int(p[4]) in known_player_ids]
-                    new_players_in_frame = [p for p in player_detections if int(p[4]) not in known_player_ids]
-
-                    available_roster_slots = 10 - len(known_player_ids)
-                    players_to_add = new_players_in_frame[:max(0, available_roster_slots)]
-                    final_detections = known_players_in_frame + players_to_add + other_detections
-                    tracks_for_stats = [((d[0:4]), int(d[4]), int(d[6])) for d in final_detections]
-                    self.stats_recorder.update(tracks_for_stats)
-
-                    tracks_for_drawing = [(d[0], d[1], d[2], d[3], d[4], d[6], d[5]) for d in final_detections]
-                    annotated_frame = self._draw_tracks(annotated_frame, tracks_for_drawing,
-                                                        self.stats_recorder.player_stats)
-
+                annotated_frame = frame.copy()
+                annotated_frame = self._draw_tracks(annotated_frame, current_player_ids)
                 annotated_frame = self.stats_recorder.draw_stats(annotated_frame)
-
-                # Display FPS
-                elapsed_time = time.time() - start_time
-                fps = self.frame_number / elapsed_time if elapsed_time > 0 else 0
-                cv2.putText(annotated_frame, f"Processing FPS: {fps:.2f}", (20, annotated_frame.shape[0] - 20),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-
                 cv2.imshow("Basketball Analysis", annotated_frame)
 
-                processing_time = time.time() - loop_start
-                wait_time_ms = int(max(1, (frame_duration - processing_time) * 1000))
-
-                if cv2.waitKey(wait_time_ms) & 0xFF == ord("q"):
-                    print("'q' pressed, stopping.")
-                    break
-
+                if cv2.waitKey(1) & 0xFF == ord("q"): break
         except Exception as e:
-            print(f"An error occurred during video processing: {e}")
+            print(f"An error occurred: {e}")
         finally:
             cap.release()
             cv2.destroyAllWindows()
             print("Processing finished.")
+

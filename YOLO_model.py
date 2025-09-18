@@ -8,14 +8,14 @@ def train_basketball_model():
     # Path to dataset's yaml file - a dictionary for classes and train/split/test
     dataset_yaml_path = 'yolo_dataset/data.yaml'
     # Base weights that will now be tuned specifically for our Basketball dataset
-    model_name = 'yolov12n.pt'
+    model_name = "yolov12n.pt"
     # Training parameters
     # Number if times to go through complete dataset
     epochs = 200
     # Resize all images to this size before training
     image_size = 640
     # Number of images to process at once.
-    batch_size = 16
+    batch_size = 64
     project_name = 'Basketball_Detection'
     run_name = f'{model_name}_{epochs}_epochs_{batch_size}_batch_size'
     # Load YOLOv12n model
@@ -35,7 +35,7 @@ def train_basketball_model():
             name=run_name,
             device=device,
             # Stop training early if no improvement is seen after 10 epochs
-            patience=10
+            patience=20
         )
         print("--- Training complete! ---")
         print(f"Results, weights, and plots saved to: '{project_name}/{run_name}'")

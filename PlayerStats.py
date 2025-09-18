@@ -3,8 +3,9 @@ import time
 class PlayerStats:
     """A simple class to store and manage statistics for a single tracked player."""
 
-    def __init__(self, track_id):
+    def __init__(self, track_id, team_id):
         self.track_id = track_id
+        self.team_id = team_id
         self.has_ball = False
         self.possession_time = 0.0
         self.last_update_time = None
