@@ -1,169 +1,116 @@
-from collections import deque
-import numpy as np
 import cv2
+import numpy as np
 from PlayerStats import *
 from Team import *
-
-# Class IDs
-PLAYER_CLASS_ID = 3
-BALL_CLASS_ID = 0
 HOOP_CLASS_ID = 1
-BALL_POSSESSION_THRESHOLD = 75
 
 class StatsRecorder:
-    """Manages all team and player statistics."""
-
-    def __init__(self, fps):
+    """
+    Manages all game statistics, including scores, possession, and player data.
+    """
+    def __init__(self, video_fps):
+        self.video_fps = video_fps
         self.player_stats = {}
         self.teams = {'A': None, 'B': None}
         self.ball_position = None
         self.hoop_position = None
-        self.player_with_ball_id = None
-        self.team_with_ball_id = None  # Tracks which team has the ball
-        self.last_player_with_ball = None  # Remembers the last player with possession for scoring
-        self.time_per_frame = 1.0 / fps if fps > 0 else 0
-        self.ball_above_hoop = False
+        self.last_score_frame = -100  # Cooldown to prevent duplicate scores
+        self.player_with_ball = None
+        self.possession_team = None
+        self.gravity_score = 0.0
+        self.highest_gravity_player_id = None
 
     def add_player(self, player_id, team_id):
-        """Adds a new player to the stats tracker and their respective team."""
+        """Adds a new player to the stats' tracker."""
         if player_id not in self.player_stats:
             self.player_stats[player_id] = PlayerStats(player_id, team_id)
             if team_id in self.teams and self.teams[team_id]:
                 self.teams[team_id].add_player(player_id)
+            print(f"Added Player {player_id} to Team {team_id}")
 
-    def _check_for_score(self):
-        """Checks if a score has occurred and attributes it to the correct team."""
-        if self.ball_position is None or self.hoop_position is None:
+    def update(self, detections, frame_number):
+        """Updates player positions, checks for scores, and determines possession."""
+        # Update hoop position first if detected
+        hoop_detections = [d for d in detections if int(d[6]) == HOOP_CLASS_ID]
+        if hoop_detections:
+            self.hoop_position = max(hoop_detections, key=lambda x: x[5])[0:4]
+
+        # Update player positions
+        for d in detections:
+            player_id = int(d[4])
+            if player_id in self.player_stats:
+                centre_x = int((d[0] + d[2]) / 2)
+                centre_y = int((d[1] + d[3]) / 2)
+                self.player_stats[player_id].update_position((centre_x, centre_y))
+
+        self._check_for_score(frame_number)
+        self._update_possession()
+
+    def _check_for_score(self, frame_number):
+        """Checks if the ball is inside the hoop, and if so, attributes a score."""
+        if frame_number < (self.last_score_frame + self.video_fps * 2):
             return
 
-        ball_cx, ball_cy = self.ball_position
-        hoop_x1, hoop_y1, hoop_x2, hoop_y2 = self.hoop_position
-        hoop_cy = (hoop_y1 + hoop_y2) / 2
+        if self.ball_position is not None and self.hoop_position is not None:
+            ball_x, ball_y = self.ball_position
+            h_x1, h_y1, h_x2, h_y2 = self.hoop_position
 
-        is_overlapping = hoop_x1 < ball_cx < hoop_x2
-        if is_overlapping:
-            if ball_cy < hoop_cy:
-                self.ball_above_hoop = True
-            elif ball_cy >= hoop_cy and self.ball_above_hoop:
-                scorer = self.player_stats.get(self.last_player_with_ball)
-                if scorer and scorer.team_id in self.teams:
-                    self.teams[scorer.team_id].score += 2
-                    print(f"Score for Team {scorer.team_id}!")
-                self.ball_above_hoop = False
-        else:
-            self.ball_above_hoop = False
+            if h_x1 < ball_x < h_x2 and h_y1 < ball_y < h_y2:
+                if self.possession_team and self.possession_team in self.teams:
+                    self.teams[self.possession_team].score += 2
+                    print(f"Score for Team {self.possession_team}!")
+                    self.last_score_frame = frame_number
 
-    def update(self, detections):
-        """Updates all stats based on the latest frame's detections."""
-        current_player_positions = {}
-        self.hoop_position = None
-        self.player_with_ball_id = None  # Reset each frame
+    def _update_possession(self):
+        """Determines which player and team has possession of the ball."""
+        if not self.ball_position:
+            self.player_with_ball = None
+            self.possession_team = None
+            return
 
-        for d in detections:
-            box, track_id, cls_id = d[0:4], int(d[4]), int(d[6])
+        min_dist = float('inf')
+        player_with_ball_id = None
 
-            # Helper function to get the centre of a bounding box
-            def get_bbox_centre(bbox):
-                return int((bbox[0] + bbox[2]) / 2), int((bbox[1] + bbox[3]) / 2)
+        for player_id, stats in self.player_stats.items():
+            if stats.positions:
+                last_pos = np.array(stats.positions[-1])
+                dist = np.linalg.norm(last_pos - np.array(self.ball_position))
 
-            centre = get_bbox_centre(box)
-
-            if cls_id == PLAYER_CLASS_ID:
-                if track_id in self.player_stats:
-                    self.player_stats[track_id].positions.append(centre)
-                current_player_positions[track_id] = centre
-            elif cls_id == HOOP_CLASS_ID:
-                self.hoop_position = box
-
-        # Determine player and team possession based on the refined ball position
-        if self.ball_position:
-            min_dist = float('inf')
-            closest_player_id = None
-            for track_id, player_pos in current_player_positions.items():
-                dist = np.linalg.norm(np.array(self.ball_position) - np.array(player_pos))
-                if dist < min_dist and dist < BALL_POSSESSION_THRESHOLD:
+                if dist < min_dist and dist < 35:
                     min_dist = dist
-                    closest_player_id = track_id
+                    player_with_ball_id = player_id
 
-            if closest_player_id is not None:
-                self.player_with_ball_id = closest_player_id
-                self.last_player_with_ball = closest_player_id
-
-                # Update team possession
-                player_stats = self.player_stats.get(closest_player_id)
-                if player_stats and player_stats.team_id:
-                    if self.team_with_ball_id != player_stats.team_id:
-                        print(f"Possession changed to Team {player_stats.team_id}")
-                    self.team_with_ball_id = player_stats.team_id
-
-        self._check_for_score()
+        if player_with_ball_id:
+            if self.player_with_ball != player_with_ball_id:
+                self.player_with_ball = player_with_ball_id
+                new_possession_team = self.player_stats[player_with_ball_id].team_id
+                if self.possession_team != new_possession_team:
+                    self.possession_team = new_possession_team
+                    print(f"Possession changed to Team {self.possession_team}")
+        else:
+            self.player_with_ball = None
+            self.possession_team = None
 
     def draw_stats(self, frame):
-        """Draws the main scoreboard, including team possession."""
+        """Draws the scoreboard and other statistics onto the frame."""
         if not self.teams.get('A') or not self.teams.get('B'):
             return frame
 
-        team_a = self.teams['A']
-        team_b = self.teams['B']
+        cv2.rectangle(frame, (10, 10), (350, 140), (0, 0, 0), -1)
 
-        box_x, box_y, box_w, box_h = 10, 10, 250, 120
+        team_a, team_b = self.teams['A'], self.teams['B']
 
-        sub_img = frame[box_y:box_y + box_h, box_x:box_x + box_w]
-        black_rect = np.ones(sub_img.shape, dtype=np.uint8) * 0
-        res = cv2.addWeighted(sub_img, 0.6, black_rect, 0.4, 1.0)
-        frame[box_y:box_y + box_h, box_x:box_x + box_w] = res
-        cv2.rectangle(frame, (box_x, box_y), (box_x + box_w, box_y + box_h), (255, 255, 255), 1)
+        possession_a = " (P)" if self.possession_team == 'A' else ""
+        possession_b = " (P)" if self.possession_team == 'B' else ""
 
-        # Title
-        text_y = box_y + 25
-        cv2.putText(frame, "SCOREBOARD", (box_x + 10, text_y), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+        score_text_a = f"Team Light: {team_a.score}{possession_a}"
+        score_text_b = f"Team Dark: {team_b.score}{possession_b}"
 
-        # Team A (Light)
-        text_y += 35
-        team_a_text = f"Light Team: {team_a.score}"
-        team_a_colour = (0, 0, 0)  # Black text
-        # Highlight with possession indicator
-        if self.team_with_ball_id == 'A':
-            team_a_text += " (P)"
-            team_a_colour = (0, 255, 0)  # Green text to show possession
-        cv2.putText(frame, team_a_text, (box_x + 10, text_y), cv2.FONT_HERSHEY_SIMPLEX, 0.6, team_a_colour, 2)
+        cv2.putText(frame, score_text_a, (20, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, team_a.primary_colour, 2)
+        cv2.putText(frame, score_text_b, (20, 90), cv2.FONT_HERSHEY_SIMPLEX, 1, team_b.primary_colour, 2)
 
-        # Team B (Dark)
-        text_y += 30
-        team_b_text = f"Dark Team: {team_b.score}"
-        team_b_colour = (255, 255, 255)  # White text
-        if self.team_with_ball_id == 'B':
-            team_b_text += " (P)"
-            team_b_colour = (0, 255, 0)
-        cv2.putText(frame, team_b_text, (box_x + 10, text_y), cv2.FONT_HERSHEY_SIMPLEX, 0.6, team_b_colour, 2)
-
-        return frame
-
-    def draw_stats(self, frame):
-        """Draws the team scoreboard on the frame."""
-        if self.teams['A'] is None: return frame  # Don't draw if teams aren't ready
-
-        box_x, box_y, box_w, box_h = 10, 10, 300, 120
-        sub_img = frame[box_y:box_y + box_h, box_x:box_x + box_w]
-        black_rect = np.ones(sub_img.shape, dtype=np.uint8) * 0
-        res = cv2.addWeighted(sub_img, 0.6, black_rect, 0.4, 1.0)
-        frame[box_y:box_y + box_h, box_x:box_x + box_w] = res
-        cv2.rectangle(frame, (box_x, box_y), (box_x + box_w, box_y + box_h), (255, 255, 255), 1)
-
-        text_y = box_y + 25
-        cv2.putText(frame, "Team Scores", (box_x + 10, text_y), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-
-        # Team A Score
-        text_y += 35
-        team_a = self.teams['A']
-        colour_a = tuple(c for c in team_a.primary_colour)
-        cv2.putText(frame, f"Team A: {team_a.score}", (box_x + 10, text_y), cv2.FONT_HERSHEY_SIMPLEX, 0.8, colour_a, 2)
-
-        # Team B Score
-        text_y += 35
-        team_b = self.teams['B']
-        colour_b = tuple(c for c in team_b.primary_colour)
-        cv2.putText(frame, f"Team B: {team_b.score}", (box_x + 10, text_y), cv2.FONT_HERSHEY_SIMPLEX, 0.8, colour_b, 2)
+        gravity_text = f"Defensive Gravity: {self.gravity_score:.2f}"
+        cv2.putText(frame, gravity_text, (20, 130), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (200, 200, 200), 2)
 
         return frame
 

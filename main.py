@@ -3,9 +3,6 @@ import zipfile
 import yaml
 import pandas as pd
 import matplotlib.pyplot as plt
-import argparse
-from PlayerStats import *
-from StatsRecorder import *
 from BasketballAnalyser import *
 from YOLO_model import *
 import torch
@@ -98,23 +95,21 @@ def analyse_yolo_dataset(dataset_dir):
         print("Error: No class names found in data.yaml.")
         return
 
-    print(f"\n--- Dataset Info ---\nClass names: {class_names}")
+    print(f"\nDataset Info \nClass names: {class_names}")
 
-    print("\n--- Split Analysis ---")
+    print("\nSplit Analysis")
     # Loop through each split defined in the YAML file
     for split_name in ['train', 'val', 'test']:
         if split_name in data_yaml:
             # Build paths dynamically for each split
             image_dir = os.path.join(dataset_root, split_name, 'images')
             label_dir = os.path.join(dataset_root, split_name, 'labels')
-
             # Print image/label counts
             if os.path.exists(image_dir):
                 n_img = len(os.listdir(image_dir))
                 n_lbl = len([f for f in os.listdir(label_dir) if f.endswith('.txt')]) if os.path.exists(
                     label_dir) else 0
                 print(f"\nFound {n_img} images and {n_lbl} labels in '{split_name}' set.")
-
                 # Call the helper function to perform the detailed analysis and plotting
                 analyse_and_plot_split(split_name, label_dir, class_names)
             else:
