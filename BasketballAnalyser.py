@@ -1,7 +1,9 @@
 from ultralytics import YOLO
-from StatsRecorder import *
-from Team import *
-
+from StatsRecorder import StatsRecorder
+from Team import Team
+import cv2
+import numpy as np
+from collections import deque
 # Try to import yt_dlp, if error, set to None
 try:
     import yt_dlp
@@ -11,13 +13,12 @@ except ImportError:
 # Centralised definitions for class IDs
 PLAYER_CLASS_ID = 3
 BALL_CLASS_ID = 0
-
+HOOP_CLASS_ID = 1
 
 #  Helper function to find centre of box
 def get_bbox_centre(bbox):
     """Calculates the centre of a bounding box."""
     return int((bbox[0] + bbox[2]) / 2), int((bbox[1] + bbox[3]) / 2)
-
 
 class BasketballAnalyser:
     """
@@ -41,18 +42,10 @@ class BasketballAnalyser:
         self.max_ball_movement = 50
         self.homography_matrix = None
         self.court_template = None
-    def _initialise_teams(self):
-        """
-        Initialises the two teams as 'Light' and 'Dark'.
-        """
-        print("Initialising teams as Light vs. Dark...")
-        # BGR format for OpenCV
-        team_a_colour = (0, 255, 0)  # Green for the 'Light' team
-        team_b_colour = (0, 0, 255)  # Red Grey for the 'Dark' team
-        self.stats_recorder.teams['A'] = Team('A', team_a_colour)
-        self.stats_recorder.teams['B'] = Team('B', team_b_colour)
-        self.teams_initialised = True
-        print(f"Teams initialised. Team A (Light): White, Team B (Dark): Grey")
+        team_a_colour = (0, 255, 0)  # Green
+        team_b_colour = (0, 0, 255)  # Red
+        self.team_a = Team('A', team_a_colour)
+        self.team_b = Team('B', team_b_colour)
 
     def _get_player_team_assignment(self, frame, bbox):
         """
@@ -80,9 +73,9 @@ class BasketballAnalyser:
         average_intensity = np.mean(gray_img)
         # Assign to the 'Light' or 'Dark' team based on the threshold
         if average_intensity > self.lightness_threshold:
-            return 'A'  # Team A is 'Light'
+            return self.team_a.team_id  # Team A is 'Light'
         else:
-            return 'B'  # Team B is 'Dark'
+            return self.team_b.team_id  # Team B is 'Dark'
 
     def _track_ball(self, detections):
         """
@@ -179,13 +172,16 @@ class BasketballAnalyser:
 
     def _draw_tracks(self, frame, current_player_ids):
         """Draws dots and labels for players, colour-coded by team."""
-        if not self.teams_initialised: return frame
-        for player_id, stats in self.stats_recorder.player_stats.items():
-            if player_id in current_player_ids and stats.team_id and stats.positions:
-                team = self.stats_recorder.teams[stats.team_id]
-                dot_colour = team.primary_colour
-                centre_x, centre_y = stats.positions[-1]
-                cv2.circle(frame, (centre_x, centre_y), 7, dot_colour, -1)
+
+        # Draw player dots
+        for player_id in current_player_ids:
+            stats = self.stats_recorder.player_stats.get(player_id)
+            if stats and stats.team_id and stats.positions:
+                team = self.stats_recorder.teams.get(stats.team_id)
+                if team:
+                    dot_colour = team.primary_colour
+                    centre_x, centre_y = stats.positions[-1]
+                    cv2.circle(frame, (centre_x, centre_y), 7, dot_colour, -1)
 
         # Draw the refined ball position
         if self.stats_recorder.ball_position:
@@ -234,6 +230,7 @@ class BasketballAnalyser:
 
     def process_video(self):
         """Processes the video, identifies teams, and tracks players."""
+        original_video_source = self.video_source
         video_url = self.video_source
         video_fps = 0
 
@@ -244,7 +241,9 @@ class BasketballAnalyser:
                     info = ydl.extract_info(self.video_source, download=False)
                     video_url, video_fps = info['url'], info.get('fps', 0)
             except Exception as e:
-                return print(f"Error extracting YouTube URL: {e}")
+                print(f"Error extracting YouTube URL: {e}")
+                print("Falling back to local video processing or a different video source.")
+                video_url = original_video_source
 
         cap = cv2.VideoCapture(video_url)
         if not cap.isOpened(): return print("Error: Could not open video source.")
@@ -252,11 +251,16 @@ class BasketballAnalyser:
         if video_fps == 0: video_fps = cap.get(cv2.CAP_PROP_FPS)
         if video_fps == 0: video_fps = 30
 
-        self.stats_recorder = StatsRecorder(video_fps)
+        # Pass the initialised Team objects to the StatsRecorder
+        self.stats_recorder = StatsRecorder(video_fps, self.team_a, self.team_b)
         cv2.namedWindow("Basketball Analysis", cv2.WINDOW_NORMAL)
         cv2.resizeWindow("Basketball Analysis", 1280, 720)
         cv2.namedWindow("Tactical View", cv2.WINDOW_NORMAL)
         cv2.resizeWindow("Tactical View", 470, 800)
+
+        # New window for stats display
+        cv2.namedWindow("Game Stats", cv2.WINDOW_NORMAL)
+        cv2.resizeWindow("Game Stats", 400, 250)
 
         if self.start_time != "0:00":
             try:
@@ -275,15 +279,13 @@ class BasketballAnalyser:
                 ret, frame = cap.read()
                 if not ret: break
                 self.frame_number += 1
-
-                if not self.teams_initialised:
-                    self._initialise_teams()
                 if self.homography_matrix is None:
                     self._setup_birds_eye_view(frame.shape)
 
                 results = \
-                self.model.track(source=frame, conf=self.conf_thresh, iou=self.iou_thresh, tracker=self.tracker_config,
-                                 persist=True, verbose=False)[0]
+                    self.model.track(source=frame, conf=self.conf_thresh, iou=self.iou_thresh,
+                                     tracker=self.tracker_config,
+                                     persist=True, verbose=False)[0]
 
                 current_player_ids = set()
                 if results.boxes.id is not None:
@@ -304,7 +306,11 @@ class BasketballAnalyser:
 
                 annotated_frame = frame.copy()
                 annotated_frame = self._draw_tracks(annotated_frame, current_player_ids)
-                annotated_frame = self.stats_recorder.draw_stats(annotated_frame)
+
+                # Get the stats frame and display it in a separate window
+                stats_frame = self.stats_recorder.get_stats_frame()
+                cv2.imshow("Game Stats", stats_frame)
+
                 cv2.imshow("Basketball Analysis", annotated_frame)
 
                 self._draw_birds_eye_view(current_player_ids)
@@ -316,4 +322,6 @@ class BasketballAnalyser:
             cap.release()
             cv2.destroyAllWindows()
             print("Processing finished.")
+
+
 

@@ -1,6 +1,7 @@
 import cv2
 import numpy as np
-from PlayerStats import *
+from PlayerStats import PlayerStats
+from Team import Team
 from Team import *
 HOOP_CLASS_ID = 1
 
@@ -8,10 +9,10 @@ class StatsRecorder:
     """
     Manages all game statistics, including scores, possession, and player data.
     """
-    def __init__(self, video_fps):
+    def __init__(self, video_fps, team_a, team_b):
         self.video_fps = video_fps
         self.player_stats = {}
-        self.teams = {'A': None, 'B': None}
+        self.teams = {team_a.team_id: team_a, team_b.team_id: team_b}
         self.ball_position = None
         self.hoop_position = None
         self.last_score_frame = -100  # Cooldown to prevent duplicate scores
@@ -23,9 +24,10 @@ class StatsRecorder:
     def add_player(self, player_id, team_id):
         """Adds a new player to the stats' tracker."""
         if player_id not in self.player_stats:
-            self.player_stats[player_id] = PlayerStats(player_id, team_id)
+            new_player = PlayerStats(player_id, team_id)
+            self.player_stats[player_id] = new_player
             if team_id in self.teams and self.teams[team_id]:
-                self.teams[team_id].add_player(player_id)
+                self.teams[team_id].add_player(new_player)
             print(f"Added Player {player_id} to Team {team_id}")
 
     def update(self, detections, frame_number):
@@ -33,6 +35,7 @@ class StatsRecorder:
         # Update hoop position first if detected
         hoop_detections = [d for d in detections if int(d[6]) == HOOP_CLASS_ID]
         if hoop_detections:
+            # x[5] = confidence score, this find the highest confidence score and then extracts the first 4 elements, which are the four corners of the box
             self.hoop_position = max(hoop_detections, key=lambda x: x[5])[0:4]
 
         # Update player positions
@@ -57,7 +60,16 @@ class StatsRecorder:
 
             if h_x1 < ball_x < h_x2 and h_y1 < ball_y < h_y2:
                 if self.possession_team and self.possession_team in self.teams:
-                    self.teams[self.possession_team].score += 2
+                    # Update player points first
+                    player_with_ball_stats = self.player_stats.get(self.player_with_ball)
+                    if player_with_ball_stats:
+                        player_with_ball_stats.update_points(2)
+
+                    # Update the team score using the Team's method
+                    team_with_possession = self.teams.get(self.possession_team)
+                    if team_with_possession:
+                        team_with_possession.update_score()
+
                     print(f"Score for Team {self.possession_team}!")
                     self.last_score_frame = frame_number
 
@@ -91,26 +103,45 @@ class StatsRecorder:
             self.player_with_ball = None
             self.possession_team = None
 
-    def draw_stats(self, frame):
-        """Draws the scoreboard and other statistics onto the frame."""
+    def get_stats_frame(self):
+        """Creates and returns an image frame of the game statistics."""
+        # Create a blank frame for the stats display
+        frame_width, frame_height = 400, 250
+        stats_frame = np.zeros((frame_height, frame_width, 3), dtype=np.uint8)
+
+        # Draw a background rectangle for the scoreboard
+        cv2.rectangle(stats_frame, (10, 10), (frame_width - 10, frame_height - 10), (0, 0, 0), -1)
+
         if not self.teams.get('A') or not self.teams.get('B'):
-            return frame
+            return stats_frame
 
-        cv2.rectangle(frame, (10, 10), (350, 140), (0, 0, 0), -1)
+        team_a_key = next(iter(self.teams))
+        team_b_key = next(iter(x for x in self.teams if x != team_a_key), None)
 
-        team_a, team_b = self.teams['A'], self.teams['B']
+        if not team_b_key:
+            return stats_frame
 
-        possession_a = " (P)" if self.possession_team == 'A' else ""
-        possession_b = " (P)" if self.possession_team == 'B' else ""
+        team_a = self.teams[team_a_key]
+        team_b = self.teams[team_b_key]
 
-        score_text_a = f"Team Light: {team_a.score}{possession_a}"
-        score_text_b = f"Team Dark: {team_b.score}{possession_b}"
+        possession_a = " (P)" if self.possession_team == team_a.team_id else ""
+        possession_b = " (P)" if self.possession_team == team_b.team_id else ""
 
-        cv2.putText(frame, score_text_a, (20, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, team_a.primary_colour, 2)
-        cv2.putText(frame, score_text_b, (20, 90), cv2.FONT_HERSHEY_SIMPLEX, 1, team_b.primary_colour, 2)
+        score_text_a = f"Team {team_a.team_id}: {team_a.score}{possession_a}"
+        score_text_b = f"Team {team_b.team_id}: {team_b.score}{possession_b}"
+
+        cv2.putText(stats_frame, score_text_a, (20, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, team_a.primary_colour, 2)
+        cv2.putText(stats_frame, score_text_b, (20, 90), cv2.FONT_HERSHEY_SIMPLEX, 1, team_b.primary_colour, 2)
 
         gravity_text = f"Defensive Gravity: {self.gravity_score:.2f}"
-        cv2.putText(frame, gravity_text, (20, 130), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (200, 200, 200), 2)
+        cv2.putText(stats_frame, gravity_text, (20, 130), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (200, 200, 200), 2)
 
-        return frame
+        # Display individual player stats
+        y_offset = 150
+        for player_id, stats in self.player_stats.items():
+            player_info_text = f"P{player_id} ({stats.team_id}): {stats.points} pts"
+            cv2.putText(stats_frame, player_info_text, (20, y_offset), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255),
+                        1)
+            y_offset += 25
 
+        return stats_frame

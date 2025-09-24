@@ -11,13 +11,27 @@ class PlayerStats:
         self.last_update_time = None
         # Use a double-ended queue to store recent positions for drawing a trail
         self.positions = deque(maxlen=30)
-        self.score = 0
+        self.points = 0
+        self.rebounds = 0
+        self.assists = 0
         self.last_seen_frame = 0
         self.last_bbox = None
 
     def update_position(self, bbox_center):
         """Adds the latest bounding box center to the player's position history."""
         self.positions.append(bbox_center)
+
+    def update_points(self, points):
+        """Adds points to the player."""
+        self.points += points
+
+    def add_rebounds(self, rebounds):
+        """Adds rebounds to the player"""
+        self.rebounds += rebounds
+
+    def add_assist(self,assists):
+        """Adds assists to the player"""
+        self.assists += assists
 
     def update_possession(self, has_ball_now: bool):
         """Updates the player's ball possession status and timer."""
