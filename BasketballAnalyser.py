@@ -46,6 +46,9 @@ class BasketballAnalyser:
         team_b_colour = (0, 0, 255)  # Red
         self.team_a = Team('A', team_a_colour)
         self.team_b = Team('B', team_b_colour)
+        self.max_players = 10
+        self.fixed_ids = deque(range(1, self.max_players + 1))
+        self.tracker_to_fixed_id = {}
 
     def _get_player_team_assignment(self, frame, bbox):
         """
@@ -84,9 +87,10 @@ class BasketballAnalyser:
         """
         # Find the highest confidence ball detection in the current frame
         ball_detections = [d for d in detections if int(d[6]) == BALL_CLASS_ID]
-        if not ball_detections:
-            current_ball_centre = None
-        else:
+        current_ball_centre = None
+
+        if ball_detections:
+            print("Ball Detected")
             best_ball = max(ball_detections, key=lambda x: x[5])  # Index 5 is confidence
             current_ball_centre = get_bbox_centre(best_ball[0:4])
 
@@ -94,7 +98,6 @@ class BasketballAnalyser:
         if current_ball_centre and self.ball_position_history:
             last_known_pos = self.ball_position_history[-1]
             distance = np.linalg.norm(np.array(current_ball_centre) - np.array(last_known_pos))
-
             # If the ball has moved an impossibly large distance, treat it as a miss-detection
             if distance > self.max_ball_movement:
                 current_ball_centre = None  # Discard the outlier
@@ -107,45 +110,55 @@ class BasketballAnalyser:
             velocity = (np.array(last_pos) - np.array(prev_pos))
             # Predict the next position based on the last known velocity
             predicted_pos = tuple(map(int, np.array(last_pos) + velocity))
-            return predicted_pos
+            current_ball_centre = predicted_pos
 
-        # Update History: If we have a valid position, update the history
+        # Update History and StatsRecorder
         if current_ball_centre:
             self.ball_position_history.append(current_ball_centre)
-            return current_ball_centre
+        else:
+            # If no ball is detected and interpolation is not possible, clear history
+            self.ball_position_history.clear()
 
-        return None  # Return None if no ball can be tracked
+        # Set the stats recorder's ball position to the final, refined position
+        self.stats_recorder.ball_position = current_ball_centre
+        return current_ball_centre
 
     def _setup_birds_eye_view(self, frame_shape):
         """Creates the court template with a detailed outline and calculates the homography matrix."""
         h, w, _ = frame_shape
-        # Define the dimensions and colours for the top-down court view
-        court_w, court_h = 470, 800
+        # Define the dimensions and colours for the top-down court view (swapped for horizontal)
+        court_w, court_h = 800, 470
         court_colour = (58, 112, 62)  # Green
         line_colour = (255, 255, 255)  # White
         self.court_template = np.zeros((court_h, court_w, 3), dtype=np.uint8)
         self.court_template[:] = court_colour
+
         # Center circle
         cv2.circle(self.court_template, (court_w // 2, court_h // 2), 50, line_colour, 2)
         # Half-court line
-        cv2.line(self.court_template, (0, court_h // 2), (court_w, court_h // 2), line_colour, 2)
+        cv2.line(self.court_template, (court_w // 2, 0), (court_w // 2, court_h), line_colour, 2)
+
         # Top key
-        key_width, key_height = 160, 190
-        cv2.rectangle(self.court_template, ((court_w - key_width) // 2, 0), ((court_w + key_width) // 2, key_height),line_colour, 2)
-        cv2.circle(self.court_template, (court_w // 2, key_height), 60, line_colour, 2)
+        key_width, key_height = 190, 160
+        cv2.rectangle(self.court_template, (0, (court_h - key_height) // 2), (key_width, (court_h + key_height) // 2),
+                      line_colour, 2)
+        cv2.circle(self.court_template, (key_width, court_h // 2), 60, line_colour, 2)
+
         # Bottom key
-        cv2.rectangle(self.court_template, ((court_w - key_width) // 2, court_h - key_height), ((court_w + key_width) // 2, court_h), line_colour, 2)
-        cv2.circle(self.court_template, (court_w // 2, court_h - key_height), 60, line_colour, 2)
+        cv2.rectangle(self.court_template, (court_w - key_width, (court_h - key_height) // 2),
+                      (court_w, (court_h + key_height) // 2), line_colour, 2)
+        cv2.circle(self.court_template, (court_w - key_width, court_h // 2), 60, line_colour, 2)
+
         # Three-point arcs
-        cv2.ellipse(self.court_template, (court_w // 2, 50), (220, 220), 0, 0, 180, line_colour, 2)
-        cv2.ellipse(self.court_template, (court_w // 2, court_h - 50), (220, 220), 0, 180, 360, line_colour, 2)
+        cv2.ellipse(self.court_template, (key_width - 150, court_h // 2), (235, 235), 0, -90, 90, line_colour, 2)
+        cv2.ellipse(self.court_template, (court_w - key_width + 150, court_h // 2), (235, 235), 0, 90, 270, line_colour,2)
 
         # These are estimated points from a video frame (source)
         # and their corresponding locations on the top-down map (destination).
-        src_points = np.array([[w * 0.3, h * 0.4], [w * 0.7, h * 0.4], [w * 0.9, h * 0.9], [w * 0.1, h * 0.9]], dtype=np.float32)
+        src_points = np.array([[w * 0.3, h * 0.4], [w * 0.7, h * 0.4], [w * 0.9, h * 0.9], [w * 0.1, h * 0.9]],
+                              dtype=np.float32)
         dst_points = np.array([[100, 100], [400, 100], [400, 400], [100, 400]], dtype=np.float32)
         self.homography_matrix, _ = cv2.findHomography(src_points, dst_points)
-
     def _draw_birds_eye_view(self, current_player_ids):
         """Draws the top-down tactical view of player and ball positions."""
         tactical_view = self.court_template.copy()
@@ -173,21 +186,26 @@ class BasketballAnalyser:
     def _draw_tracks(self, frame, current_player_ids):
         """Draws dots and labels for players, colour-coded by team."""
 
-        # Draw player dots
-        for player_id in current_player_ids:
+        # Get the list of players to draw from the stats recorder
+        players_to_draw = self.stats_recorder.player_stats.keys()
+
+        # Draw player dots and IDs
+        for player_id in players_to_draw:
             stats = self.stats_recorder.player_stats.get(player_id)
             if stats and stats.team_id and stats.positions:
                 team = self.stats_recorder.teams.get(stats.team_id)
                 if team:
                     dot_colour = team.primary_colour
+                    # Draw only the last, most recent position
                     centre_x, centre_y = stats.positions[-1]
                     cv2.circle(frame, (centre_x, centre_y), 7, dot_colour, -1)
-
+                    # Add player ID label for debugging
+                    cv2.putText(frame, str(player_id), (centre_x + 10, centre_y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5,
+                                (255, 255, 255), 2)
         # Draw the refined ball position
         if self.stats_recorder.ball_position:
             ball_x, ball_y = map(int, self.stats_recorder.ball_position)
             cv2.circle(frame, (ball_x, ball_y), 7, (255, 165, 0), -1)
-
         return frame
 
     def _calculate_and_update_gravity(self, current_player_ids):
@@ -256,7 +274,7 @@ class BasketballAnalyser:
         cv2.namedWindow("Basketball Analysis", cv2.WINDOW_NORMAL)
         cv2.resizeWindow("Basketball Analysis", 1280, 720)
         cv2.namedWindow("Tactical View", cv2.WINDOW_NORMAL)
-        cv2.resizeWindow("Tactical View", 470, 800)
+        cv2.resizeWindow("Tactical View", 800, 470)
 
         # New window for stats display
         cv2.namedWindow("Game Stats", cv2.WINDOW_NORMAL)
@@ -279,6 +297,7 @@ class BasketballAnalyser:
                 ret, frame = cap.read()
                 if not ret: break
                 self.frame_number += 1
+
                 if self.homography_matrix is None:
                     self._setup_birds_eye_view(frame.shape)
 
@@ -287,25 +306,54 @@ class BasketballAnalyser:
                                      tracker=self.tracker_config,
                                      persist=True, verbose=False)[0]
 
-                current_player_ids = set()
-                if results.boxes.id is not None:
-                    detections = results.boxes.data.cpu().numpy()
-                    current_player_ids = {int(d[4]) for d in detections if int(d[6]) == PLAYER_CLASS_ID}
+                # Get all player detections and their IDs from the current frame
+                current_detections = results.boxes.data.cpu().numpy() if results.boxes.id is not None else []
+                current_player_detections = [d for d in current_detections if int(d[6]) == PLAYER_CLASS_ID]
 
-                    self.stats_recorder.ball_position = self._track_ball(detections)
-                    self.stats_recorder.update(detections, self.frame_number)
-                    self._calculate_and_update_gravity(current_player_ids)
+                current_tracker_ids = {int(d[4]) for d in current_player_detections}
 
-                    new_detections = [d for d in detections if int(d[6]) == PLAYER_CLASS_ID and int(
-                        d[4]) not in self.stats_recorder.player_stats]
+                # Identify lost players and return their fixed IDs to the pool
+                ids_to_remove = []
+                for tracker_id, fixed_id in self.tracker_to_fixed_id.items():
+                    if tracker_id not in current_tracker_ids:
+                        self.fixed_ids.append(fixed_id)
+                        ids_to_remove.append(tracker_id)
+                        print(f"Player with ID {fixed_id} lost. ID returned to pool.")
+                for tracker_id in ids_to_remove:
+                    del self.tracker_to_fixed_id[tracker_id]
+                    self.stats_recorder.remove_player(self.tracker_to_fixed_id.get(tracker_id))
 
-                    for new_player in new_detections:
-                        assigned_team = self._get_player_team_assignment(frame, new_player[0:4])
+                # Assign fixed IDs to new players
+                for d in current_player_detections:
+                    tracker_id = int(d[4])
+                    if tracker_id not in self.tracker_to_fixed_id and self.fixed_ids:
+                        fixed_id = self.fixed_ids.popleft()
+                        self.tracker_to_fixed_id[tracker_id] = fixed_id
+                        assigned_team = self._get_player_team_assignment(frame, d[0:4])
                         if assigned_team:
-                            self.stats_recorder.add_player(int(new_player[4]), assigned_team)
+                            self.stats_recorder.add_player(fixed_id, assigned_team)
+                            print(f"Assigned new fixed ID {fixed_id} to tracker ID {tracker_id}. Team: {assigned_team}")
+
+                # Update stats for all currently detected players
+                for d in current_player_detections:
+                    tracker_id = int(d[4])
+                    fixed_id = self.tracker_to_fixed_id.get(tracker_id)
+                    if fixed_id is not None:
+                        centre_x = int((d[0] + d[2]) / 2)
+                        centre_y = int((d[1] + d[3]) / 2)
+                        player_stats = self.stats_recorder.player_stats.get(fixed_id)
+                        if player_stats:
+                            player_stats.update_position((centre_x, centre_y))
+
+                # Now get the list of active fixed player IDs
+                active_fixed_player_ids = list(self.stats_recorder.player_stats.keys())
+
+                self.stats_recorder.ball_position = self._track_ball(current_detections)
+                self.stats_recorder.update(current_detections, self.frame_number)
+                self._calculate_and_update_gravity(active_fixed_player_ids)
 
                 annotated_frame = frame.copy()
-                annotated_frame = self._draw_tracks(annotated_frame, current_player_ids)
+                annotated_frame = self._draw_tracks(annotated_frame, active_fixed_player_ids)
 
                 # Get the stats frame and display it in a separate window
                 stats_frame = self.stats_recorder.get_stats_frame()
@@ -313,7 +361,7 @@ class BasketballAnalyser:
 
                 cv2.imshow("Basketball Analysis", annotated_frame)
 
-                self._draw_birds_eye_view(current_player_ids)
+                self._draw_birds_eye_view(active_fixed_player_ids)
 
                 if cv2.waitKey(1) & 0xFF == ord("q"): break
         except Exception as e:
@@ -322,6 +370,3 @@ class BasketballAnalyser:
             cap.release()
             cv2.destroyAllWindows()
             print("Processing finished.")
-
-
-

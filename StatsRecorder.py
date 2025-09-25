@@ -30,6 +30,17 @@ class StatsRecorder:
                 self.teams[team_id].add_player(new_player)
             print(f"Added Player {player_id} to Team {team_id}")
 
+    def remove_player(self, player_id):
+        """Removes a player from the stats tracker."""
+        if player_id in self.player_stats:
+            team_id = self.player_stats[player_id].team_id
+            if team_id in self.teams and self.teams[team_id]:
+                self.teams[team_id].remove_player(player_id)
+            del self.player_stats[player_id]
+            print(f"Removed Player {player_id} from Team {team_id}")
+        else:
+            print(f"Player {player_id} not found in stats.")
+
     def update(self, detections, frame_number):
         """Updates player positions, checks for scores, and determines possession."""
         # Update hoop position first if detected
