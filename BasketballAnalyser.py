@@ -4,6 +4,7 @@ from Team import Team
 import cv2
 import numpy as np
 from collections import deque
+
 # Try to import yt_dlp, if error, set to None
 try:
     import yt_dlp
@@ -15,16 +16,20 @@ PLAYER_CLASS_ID = 3
 BALL_CLASS_ID = 0
 HOOP_CLASS_ID = 1
 
+
 #  Helper function to find centre of box
 def get_bbox_centre(bbox):
     """Calculates the centre of a bounding box."""
     return int((bbox[0] + bbox[2]) / 2), int((bbox[1] + bbox[3]) / 2)
 
+
 class BasketballAnalyser:
     """
     Main class to orchestrate the detection, tracking, and team-based analysis.
     """
-    def __init__(self, model_path, video_source, tracker_config='botsort.yaml', conf_thresh=0.5, iou_thresh=0.7, start_time="0:00"):
+
+    def __init__(self, model_path, video_source, tracker_config='botsort.yaml', conf_thresh=0.5, iou_thresh=0.7,
+                 start_time="0:00"):
         self.model = YOLO(model_path)
         self.video_source = video_source
         self.tracker_config = tracker_config
@@ -49,6 +54,8 @@ class BasketballAnalyser:
         self.max_players = 10
         self.fixed_ids = deque(range(1, self.max_players + 1))
         self.tracker_to_fixed_id = {}
+        # Threshold for ball and hoop proximity check
+        self.ball_hoop_proximity_threshold = 30
 
     def _get_player_team_assignment(self, frame, bbox):
         """
@@ -90,7 +97,6 @@ class BasketballAnalyser:
         current_ball_centre = None
 
         if ball_detections:
-            print("Ball Detected")
             best_ball = max(ball_detections, key=lambda x: x[5])  # Index 5 is confidence
             current_ball_centre = get_bbox_centre(best_ball[0:4])
 
@@ -112,16 +118,32 @@ class BasketballAnalyser:
             predicted_pos = tuple(map(int, np.array(last_pos) + velocity))
             current_ball_centre = predicted_pos
 
-        # Update History and StatsRecorder
+        # Update History
         if current_ball_centre:
             self.ball_position_history.append(current_ball_centre)
         else:
             # If no ball is detected and interpolation is not possible, clear history
             self.ball_position_history.clear()
 
-        # Set the stats recorder's ball position to the final, refined position
-        self.stats_recorder.ball_position = current_ball_centre
         return current_ball_centre
+
+    def _check_ball_hoop_proximity(self, detections):
+        """Checks if the ball and hoop objects are close to each other."""
+        ball_detections = [d for d in detections if int(d[6]) == BALL_CLASS_ID]
+        hoop_detections = [d for d in detections if int(d[6]) == HOOP_CLASS_ID]
+
+        if ball_detections and hoop_detections:
+            # Get the highest-confidence ball and hoop detections
+            ball_bbox = max(ball_detections, key=lambda x: x[5])[0:4]
+            hoop_bbox = max(hoop_detections, key=lambda x: x[5])[0:4]
+
+            ball_center = get_bbox_centre(ball_bbox)
+            hoop_center = get_bbox_centre(hoop_bbox)
+
+            distance = np.linalg.norm(np.array(ball_center) - np.array(hoop_center))
+
+            if distance < self.ball_hoop_proximity_threshold:
+                print(f"Proximity Alert! Ball and hoop are close. Distance: {distance:.2f} pixels.")
 
     def _setup_birds_eye_view(self, frame_shape):
         """Creates the court template with a detailed outline and calculates the homography matrix."""
@@ -150,8 +172,8 @@ class BasketballAnalyser:
         cv2.circle(self.court_template, (court_w - key_width, court_h // 2), 60, line_colour, 2)
 
         # Three-point arcs
-        cv2.ellipse(self.court_template, (key_width - 150, court_h // 2), (235, 235), 0, -90, 90, line_colour, 2)
-        cv2.ellipse(self.court_template, (court_w - key_width + 150, court_h // 2), (235, 235), 0, 90, 270, line_colour,2)
+        cv2.ellipse(self.court_template, (key_width, court_h // 2), (235, 235), 0, -90, 90, line_colour, 2)
+        cv2.ellipse(self.court_template, (court_w - key_width, court_h // 2), (235, 235), 0, 90, 270, line_colour, 2)
 
         # These are estimated points from a video frame (source)
         # and their corresponding locations on the top-down map (destination).
@@ -159,6 +181,7 @@ class BasketballAnalyser:
                               dtype=np.float32)
         dst_points = np.array([[100, 100], [400, 100], [400, 400], [100, 400]], dtype=np.float32)
         self.homography_matrix, _ = cv2.findHomography(src_points, dst_points)
+
     def _draw_birds_eye_view(self, current_player_ids):
         """Draws the top-down tactical view of player and ball positions."""
         tactical_view = self.court_template.copy()
@@ -183,14 +206,11 @@ class BasketballAnalyser:
 
         cv2.imshow("Tactical View", tactical_view)
 
-    def _draw_tracks(self, frame, current_player_ids):
-        """Draws dots and labels for players, colour-coded by team."""
-
-        # Get the list of players to draw from the stats recorder
-        players_to_draw = self.stats_recorder.player_stats.keys()
+    def _draw_tracks(self, frame, active_fixed_player_ids):
+        """Draws dots and labels for currently tracked players, colour-coded by team."""
 
         # Draw player dots and IDs
-        for player_id in players_to_draw:
+        for player_id in active_fixed_player_ids:
             stats = self.stats_recorder.player_stats.get(player_id)
             if stats and stats.team_id and stats.positions:
                 team = self.stats_recorder.teams.get(stats.team_id)
@@ -310,6 +330,7 @@ class BasketballAnalyser:
                 current_detections = results.boxes.data.cpu().numpy() if results.boxes.id is not None else []
                 current_player_detections = [d for d in current_detections if int(d[6]) == PLAYER_CLASS_ID]
 
+                # --- NEW ID MANAGEMENT LOGIC ---
                 current_tracker_ids = {int(d[4]) for d in current_player_detections}
 
                 # Identify lost players and return their fixed IDs to the pool
@@ -320,8 +341,10 @@ class BasketballAnalyser:
                         ids_to_remove.append(tracker_id)
                         print(f"Player with ID {fixed_id} lost. ID returned to pool.")
                 for tracker_id in ids_to_remove:
-                    del self.tracker_to_fixed_id[tracker_id]
-                    self.stats_recorder.remove_player(self.tracker_to_fixed_id.get(tracker_id))
+                    fixed_id = self.tracker_to_fixed_id.get(tracker_id)
+                    if fixed_id is not None:
+                        del self.tracker_to_fixed_id[tracker_id]
+                        self.stats_recorder.remove_player(fixed_id)
 
                 # Assign fixed IDs to new players
                 for d in current_player_detections:
@@ -351,6 +374,7 @@ class BasketballAnalyser:
                 self.stats_recorder.ball_position = self._track_ball(current_detections)
                 self.stats_recorder.update(current_detections, self.frame_number)
                 self._calculate_and_update_gravity(active_fixed_player_ids)
+                self._check_ball_hoop_proximity(current_detections)
 
                 annotated_frame = frame.copy()
                 annotated_frame = self._draw_tracks(annotated_frame, active_fixed_player_ids)

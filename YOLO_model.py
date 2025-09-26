@@ -17,7 +17,7 @@ def train_basketball_model():
     # Number of images to process at once.
     batch_size = 64
     project_name = 'Basketball_Detection'
-    run_name = f'{model_name}_{epochs}_epochs_{batch_size}_batch_size'
+    run_name = f'{model_name}_{epochs}_epochs_{batch_size}_batch_size_augmented_c&p_mosaic_cls'
     # Load YOLOv12n model
     print(f"Loading base model: {model_name}")
     model = YOLO(model_name)
@@ -34,6 +34,16 @@ def train_basketball_model():
             project=project_name,
             name=run_name,
             device=device,
+            # Data augmentation parameters to make the model more robust to class imbalance
+            copy_paste=0.5, # Enable copy-paste augmentation
+            mosaic=0.0,  # Enable mosaic data augmentation
+            mixup=0.0,  # Enable mixup data augmentation
+            shear=0.0,  # Disable shear augmentation
+            hsv_h=0.025,  # Adjust hue
+            hsv_s=0.7,  # Adjust saturation
+            hsv_v=0.4,  # Adjust value
+            cls=1.0,  # A higher value gives more weight to the classification loss
+            dropout=0.3,  # Add dropout to prevent overfitting
             # Stop training early if no improvement is seen after 10 epochs
             patience=20
         )

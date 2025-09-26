@@ -6,6 +6,7 @@ import matplotlib.pyplot as plt
 from BasketballAnalyser import *
 from YOLO_model import *
 import torch
+from ultralytics import YOLO
 
 BBALL_DATASET = "yolo_dataset"
 
@@ -118,10 +119,56 @@ def analyse_yolo_dataset(dataset_dir):
             print(f"\nInfo: Split '{split_name}' not defined in data.yaml.")
 
 
+def find_best_weights():
+    """
+    Evaluates models from a list of directories to find the best performing one.
+    """
+    # Path to the parent directory containing all trained models
+    parent_dir = 'Basketball_Detection'
+    # Define the list of model directories to evaluate
+    model_dirs = [
+        'yolov12n.pt_200_epochs_16_batch_size',
+        'yolov12n.pt_200_epochs_64_batch_size',
+        'yolov12n.pt_200_epochs_64_batch_size_augmented',
+        'yolov12n.pt_200_epochs_64_batch_size_augmented_c&p',
+        'yolov12n.pt_200_epochs_64_batch_size_augmented_c&p_mosaic',
+        'yolov12n.pt_200_epochs_64_batch_size_augmented_c&p_mosaic_cls'
+    ]
+
+    best_mAP = -1.0
+    best_model_path = None
+
+    # Path to your dataset's validation split
+    dataset_yaml_path = 'yolo_dataset/data.yaml'
+
+    for model_dir in model_dirs:
+        model_path = os.path.join(parent_dir, model_dir, 'weights', 'best.pt')
+
+        if os.path.exists(model_path):
+            print(f"\n--- Validating model: {model_path} ---")
+            try:
+                model = YOLO(model_path)
+                metrics = model.val(data=dataset_yaml_path)
+                current_mAP = metrics.results_dict['metrics/mAP50(B)']
+
+                print(f"Model {model_dir} achieved mAP50(B) of {current_mAP:.4f}")
+
+                if current_mAP > best_mAP:
+                    best_mAP = current_mAP
+                    best_model_path = model_path
+            except Exception as e:
+                print(f"An error occurred during validation of {model_path}: {e}")
+        else:
+            print(f"Model not found at: {model_path}")
+
+    print(f"\n--- All models evaluated. ---")
+    print(f"Best model found: {best_model_path} with an mAP50(B) of {best_mAP:.4f}")
+
 if __name__ == "__main__":
     # print(torch.cuda.is_available())
     # train_basketball_model()
-    MODEL_PATH = "Basketball_Detection/yolov12n.pt_200_epochs_64_batch_size/weights/best.pt"
+    # find_best_weights()
+    MODEL_PATH = "Basketball_Detection/yolov12n.pt_200_epochs_64_batch_size_augmented/weights/best.pt"
     VIDEO_SOURCE = "https://www.youtube.com/watch?v=d_JI-QGcpgI"
     START_TIME = "0:00"
     try:
