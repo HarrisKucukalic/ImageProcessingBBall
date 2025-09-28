@@ -169,8 +169,8 @@ if __name__ == "__main__":
     # train_basketball_model()
     # find_best_weights()
     MODEL_PATH = "Basketball_Detection/yolov12n.pt_200_epochs_64_batch_size_augmented/weights/best.pt"
-    VIDEO_SOURCE = "https://www.youtube.com/watch?v=d_JI-QGcpgI"
-    START_TIME = "0:00"
+    VIDEO_SOURCE = "https://www.youtube.com/watch?v=6OTIqjh0eKc&list=PLiVlTTnDnAcsX_H-K9sy98OKvjGtpYSi-&index=1&t=443s"
+    START_TIME = "7:00"
     try:
         analyser = BasketballAnalyser(
             model_path=MODEL_PATH,

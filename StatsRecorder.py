@@ -3,12 +3,15 @@ import numpy as np
 from PlayerStats import PlayerStats
 from Team import Team
 from Team import *
+
 HOOP_CLASS_ID = 1
+
 
 class StatsRecorder:
     """
     Manages all game statistics, including scores, possession, and player data.
     """
+
     def __init__(self, video_fps, team_a, team_b):
         self.video_fps = video_fps
         self.player_stats = {}
@@ -20,6 +23,19 @@ class StatsRecorder:
         self.possession_team = None
         self.gravity_score = 0.0
         self.highest_gravity_player_id = None
+        self.current_frame_number = 0  # To track game time
+
+        # --- Shot Detection Stats ---
+        self.makes = 0
+        self.attempts = 0
+
+    @property
+    def current_time_string(self):
+        """Calculates the current game time in MM:SS format based on frame count and FPS."""
+        total_seconds = int(self.current_frame_number / self.video_fps)
+        minutes = total_seconds // 60
+        seconds = total_seconds % 60
+        return f"{minutes:02d}:{seconds:02d}"
 
     def add_player(self, player_id, team_id):
         """Adds a new player to the stats' tracker."""
@@ -42,47 +58,19 @@ class StatsRecorder:
             print(f"Player {player_id} not found in stats.")
 
     def update(self, detections, frame_number):
-        """Updates player positions, checks for scores, and determines possession."""
-        # Update hoop position first if detected
+        """Updates player positions and determines possession."""
+        self.current_frame_number = frame_number
+
+        # Update hoop position if detected (needed for hoop tracking/gravity, but scoring is handled by shot logic)
         hoop_detections = [d for d in detections if int(d[6]) == HOOP_CLASS_ID]
         if hoop_detections:
-            # x[5] = confidence score, this find the highest confidence score and then extracts the first 4 elements, which are the four corners of the box
             self.hoop_position = max(hoop_detections, key=lambda x: x[5])[0:4]
 
-        # Update player positions
-        for d in detections:
-            player_id = int(d[4])
-            if player_id in self.player_stats:
-                centre_x = int((d[0] + d[2]) / 2)
-                centre_y = int((d[1] + d[3]) / 2)
-                self.player_stats[player_id].update_position((centre_x, centre_y))
-
-        self._check_for_score(frame_number)
         self._update_possession()
 
-    def _check_for_score(self, frame_number):
-        """Checks if the ball is inside the hoop, and if so, attributes a score."""
-        if frame_number < (self.last_score_frame + self.video_fps * 2):
-            return
+        # Note: Makes/attempts are updated by the Shot Detection logic in BasketballAnalyser
 
-        if self.ball_position is not None and self.hoop_position is not None:
-            ball_x, ball_y = self.ball_position
-            h_x1, h_y1, h_x2, h_y2 = self.hoop_position
-
-            if h_x1 < ball_x < h_x2 and h_y1 < ball_y < h_y2:
-                if self.possession_team and self.possession_team in self.teams:
-                    # Update player points first
-                    player_with_ball_stats = self.player_stats.get(self.player_with_ball)
-                    if player_with_ball_stats:
-                        player_with_ball_stats.update_points(2)
-
-                    # Update the team score using the Team's method
-                    team_with_possession = self.teams.get(self.possession_team)
-                    if team_with_possession:
-                        team_with_possession.update_score()
-
-                    print(f"Score for Team {self.possession_team}!")
-                    self.last_score_frame = frame_number
+    # Removed the old _check_for_score(frame_number) method as shot logic now handles scoring and points updates.
 
     def _update_possession(self):
         """Determines which player and team has possession of the ball."""
@@ -97,6 +85,7 @@ class StatsRecorder:
         for player_id, stats in self.player_stats.items():
             if stats.positions:
                 last_pos = np.array(stats.positions[-1])
+                # We expect ball to be closer than 35 pixels to the player for possession
                 dist = np.linalg.norm(last_pos - np.array(self.ball_position))
 
                 if dist < min_dist and dist < 35:
@@ -138,21 +127,31 @@ class StatsRecorder:
         possession_a = " (P)" if self.possession_team == team_a.team_id else ""
         possession_b = " (P)" if self.possession_team == team_b.team_id else ""
 
+        # --- Line 1: Game Time ---
+        time_text = f"Time: {self.current_time_string}"
+        cv2.putText(stats_frame, time_text, (20, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+
+        # --- Line 2: Team Scores ---
         score_text_a = f"Team {team_a.team_id}: {team_a.score}{possession_a}"
         score_text_b = f"Team {team_b.team_id}: {team_b.score}{possession_b}"
 
-        cv2.putText(stats_frame, score_text_a, (20, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, team_a.primary_colour, 2)
-        cv2.putText(stats_frame, score_text_b, (20, 90), cv2.FONT_HERSHEY_SIMPLEX, 1, team_b.primary_colour, 2)
+        cv2.putText(stats_frame, score_text_a, (20, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.7, team_a.primary_colour, 2)
+        cv2.putText(stats_frame, score_text_b, (200, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.7, team_b.primary_colour, 2)
 
+        # --- Line 3: Shot Stats ---
+        shot_text = f"Shots: {self.makes} / {self.attempts}"
+        cv2.putText(stats_frame, shot_text, (20, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 165, 0), 2)
+
+        # --- Line 4: Defensive Gravity ---
         gravity_text = f"Defensive Gravity: {self.gravity_score:.2f}"
-        cv2.putText(stats_frame, gravity_text, (20, 130), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (200, 200, 200), 2)
+        cv2.putText(stats_frame, gravity_text, (20, 120), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (200, 200, 200), 2)
 
-        # Display individual player stats
+        # Display individual player stats (Space is limited, showing fewer lines)
         y_offset = 150
-        for player_id, stats in self.player_stats.items():
-            player_info_text = f"P{player_id} ({stats.team_id}): {stats.points} pts"
-            cv2.putText(stats_frame, player_info_text, (20, y_offset), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255),
-                        1)
-            y_offset += 25
+        # for player_id, stats in self.player_stats.items():
+        #     player_info_text = f"P{player_id} ({stats.team_id}): {stats.points} pts"
+        #     cv2.putText(stats_frame, player_info_text, (20, y_offset), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255),
+        #                 1)
+        #     y_offset += 25
 
         return stats_frame
