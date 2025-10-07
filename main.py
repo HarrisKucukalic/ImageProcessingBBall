@@ -7,7 +7,9 @@ from BasketballAnalyser import *
 from YOLO_model import *
 import torch
 from ultralytics import YOLO
-
+from DETR_data_converter_utils import *
+from DETR_model import *
+from SVM_HOG_model import *
 BBALL_DATASET = "yolo_dataset"
 
 def unzip_dataset(zip_path, extract_path):
@@ -168,15 +170,154 @@ if __name__ == "__main__":
     # print(torch.cuda.is_available())
     # train_basketball_model()
     # find_best_weights()
-    MODEL_PATH = "Basketball_Detection/yolov12n.pt_200_epochs_64_batch_size_augmented/weights/best.pt"
-    VIDEO_SOURCE = "https://www.youtube.com/watch?v=6OTIqjh0eKc&list=PLiVlTTnDnAcsX_H-K9sy98OKvjGtpYSi-&index=1&t=443s"
-    START_TIME = "7:00"
-    try:
-        analyser = BasketballAnalyser(
-            model_path=MODEL_PATH,
-            video_source=VIDEO_SOURCE,
-            start_time=START_TIME
-        )
-        analyser.process_video()
-    except Exception as e:
-        print(f"An error occurred: {e}")
+    # # Check device status (Standard practice for ML scripts)
+    # device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    # print(f"Running on device: {device}")
+    # # Define the path to the YOLO dataset configuration
+    # DATASET_YAML_PATH = 'yolo_dataset/data.yaml'
+    # # Load categories from the YAML file
+    # BASKETBALL_CATEGORIES = load_categories_from_yaml(DATASET_YAML_PATH)
+    # if not BASKETBALL_CATEGORIES:
+    #     print("\nFATAL ERROR: Could not load categories from YAML. Conversion halted.")
+    # else:
+    #     print(f"Successfully loaded {len(BASKETBALL_CATEGORIES)} Categories: {BASKETBALL_CATEGORIES}")
+    #     # Define the splits to process
+    #     SPLITS = ['train', 'val', 'test']
+    #     print("\nStarting Conversion for All Splits")
+    #     # Create output directory for JSONs if it doesn't exist
+    #     os.makedirs('./detr_annotations', exist_ok=True)
+    #     # Run conversion for all splits
+    #     for split_name in SPLITS:
+    #         # The run_split_conversion function handles paths and calls the converter.
+    #         # It uses the default base_dir='./yolo_dataset' and outputs JSONs
+    #         # to the main directory (e.g., ./detr_train_annotations.json).
+    #         run_split_conversion(split_name, BASKETBALL_CATEGORIES)
+    #
+    #     print("\nAll dataset splits have been successfully converted to COCO JSON format.")
+
+    # train_detr_model(epochs=200, batch_size=8)
+
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    dataset_base_path = os.path.join(script_dir, 'yolo_dataset')
+
+    # Training paths (we'll still combine train+val for the final model)
+    train_image_dirs = [os.path.join(dataset_base_path, 'train', 'images'),
+                        os.path.join(dataset_base_path, 'val', 'images')]
+    train_label_dirs = [os.path.join(dataset_base_path, 'train', 'labels'),
+                        os.path.join(dataset_base_path, 'val', 'labels')]
+
+    # Validation paths (for evaluation only)
+    val_image_dirs = [os.path.join(dataset_base_path, 'val', 'images')]
+    val_label_dirs = [os.path.join(dataset_base_path, 'val', 'labels')]
+
+    # Test paths (for evaluation only)
+    test_image_dirs = [os.path.join(dataset_base_path, 'test', 'images')]
+    test_label_dirs = [os.path.join(dataset_base_path, 'test', 'labels')]
+
+    # 2. Initialize and Train the Detector
+    print("\n--- Training the SVM-HOG Detector ---")
+    detector = SVM_HOG_ObjectDetector(window_size=(80, 80))  # Use a squarish window for basketballs
+    detector.train(image_dirs=train_image_dirs, label_dirs=train_label_dirs)
+
+    # # 3. Evaluate Classifier Performance
+    # print("\n\n========================================")
+    # print("  Evaluating Classifier Performance")
+    # print("========================================")
+    #
+    # print("\n--- On Training Set ---")
+    # detector.evaluate_model(train_image_dirs, train_label_dirs)
+    #
+    # print("\n--- On Validation Set ---")
+    # detector.evaluate_model(val_image_dirs, val_label_dirs)
+    #
+    # print("\n--- On Test Set ---")
+    # detector.evaluate_model(test_image_dirs, test_label_dirs)
+    #
+    # # 4. Run detection on a single test image
+    # print("\n\n========================================")
+    # print("     Running Full Object Detection")
+    # print("========================================")
+
+    # 4. Run detection on a single test image and visualize result
+
+    test_image_dir = test_image_dirs[0]  # Use the first (and only) test directory
+    test_label_dir = test_label_dirs[0]
+    all_test_images = os.listdir(test_image_dir)
+
+    if not all_test_images:
+        print("No images found in the test directory.")
+    else:
+        # 1. Pick a random image from the test set
+        test_image_name = random.choice(all_test_images)
+        test_image_path = os.path.join(test_image_dir, test_image_name)
+        print(f"Randomly selected test image: {test_image_path}")
+
+        # 2. Run detection and visualize PREDICTED boxes (in green)
+        # -----------------------------------------------------------
+        predicted_boxes = detector.detect(test_image_path, confidence_threshold=0.5)
+        print(f"\nDetected {len(predicted_boxes)} objects (predictions).")
+
+        # Load the image to draw predictions on
+        predicted_image = cv2.imread(test_image_path)
+        for box in predicted_boxes:
+            x1, y1, x2, y2 = box[:4]
+            # Draw a GREEN rectangle for predictions
+            cv2.rectangle(predicted_image, (x1, y1), (x2, y2), (0, 255, 0), 2)
+
+        # Save the prediction visualization
+        prediction_output_path = f'prediction_{test_image_name}'
+        cv2.imwrite(prediction_output_path, predicted_image)
+        print(f"Prediction visualization saved to '{prediction_output_path}'")
+
+        # 3. Load the true labels and visualize GROUND TRUTH boxes (in blue)
+        # -----------------------------------------------------------------
+        # Load a fresh copy of the image for ground truth
+        gt_image = cv2.imread(test_image_path)
+        h, w, _ = gt_image.shape
+
+        # Find the corresponding label file
+        basename, _ = os.path.splitext(test_image_name)
+        label_path = os.path.join(test_label_dir, basename + '.txt')
+
+        if not os.path.exists(label_path):
+            print(f"No ground truth label file found for this image at '{label_path}'")
+        else:
+            with open(label_path, 'r') as f:
+                lines = f.readlines()
+                print(f"Found {len(lines)} objects in ground truth file.")
+                for line in lines:
+                    # Parse the YOLO format line
+                    class_id, x_center, y_center, width, height = map(float, line.split())
+
+                    # De-normalize coordinates back to pixel values
+                    x_center_px = x_center * w
+                    y_center_px = y_center * h
+                    width_px = width * w
+                    height_px = height * h
+
+                    # Calculate top-left and bottom-right corners
+                    x1 = int(x_center_px - (width_px / 2))
+                    y1 = int(y_center_px - (height_px / 2))
+                    x2 = int(x_center_px + (width_px / 2))
+                    y2 = int(y_center_px + (height_px / 2))
+
+                    # Draw a BLUE rectangle for ground truth
+                    cv2.rectangle(gt_image, (x1, y1), (x2, y2), (255, 0, 0), 2)
+
+            # Save the ground truth visualization
+            gt_output_path = f'ground_truth_{test_image_name}'
+            cv2.imwrite(gt_output_path, gt_image)
+            print(f"Ground truth visualization saved to '{gt_output_path}'")
+
+# MODEL_PATH = "Basketball_Detection/yolov12n.pt_200_epochs_64_batch_size_augmented/weights/best.pt"
+    # VIDEO_SOURCE = "https://www.youtube.com/watch?v=6OTIqjh0eKc&list=PLiVlTTnDnAcsX_H-K9sy98OKvjGtpYSi-&index=1&t=443s"
+    # START_TIME = "7:00"
+    # try:
+    #     analyser = BasketballAnalyser(
+    #         model_path=MODEL_PATH,
+    #         video_source=VIDEO_SOURCE,
+    #         start_time=START_TIME
+    #     )
+    #     analyser.process_video()
+    # except Exception as e:
+    #     print(f"An error occurred: {e}")
