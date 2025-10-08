@@ -38,37 +38,51 @@ class BasketballAnalyser:
         # Our trained YOLO model that is used for player tracking
         self.model = YOLO(model_path)
 
-        # Secondary model imported from the GitHub repo above, which is used to identify the ball and basket objects more accurately.
+        # Secondary model imported from the GitHub repo above, which is used to identify the ball and basket objects
+        # more accurately.
         try:
             self.shot_model = YOLO("shot_detector_external.pt")
-            print("Successfully loaded specialised shot model 'shot_detector_external.pt' from https://github.com/avishah3/AI-Basketball-Shot-Detection-Tracker/blob/master/utils.py")
+            print("Successfully loaded specialised shot model 'shot_detector_external.pt' from "
+                  "https://github.com/avishah3/AI-Basketball-Shot-Detection-Tracker/blob/master/utils.py")
         except Exception as e:
             # Fallback to using the primary model for all detections if hoop/ball shot detector fails
             print(
-                f"Warning: Could not load shot model 'shot_detector_external.pt'. Falling back to primary model for ball/hoop detection. Error: {e}")
+                f"Warning: Could not load shot model 'shot_detector_external.pt'. Falling back to primary model for "
+                f"ball/hoop detection. Error: {e}")
             self.shot_model = self.model
 
         self.video_source = video_source
         # Used to define between ByteTrack and BoT-SORT
         self.tracker_config = tracker_config
-        # This is our confidence threshold, which essentially is the minimum model confidence for an object detection. We set this 0.5, meaning our model will only record detecions it is 50% or above confident in being true.
+        # This is for the custom MOT-SIFT from https://github.com/abhishek30-ml/Multiple-Object-Tracking
+        if not isinstance(tracker_config, str):
+            self.tracker_config.model = self.model
+            print("External tracker instance configured to use the primary model.")
+        # This is our confidence threshold, which essentially is the minimum model confidence for an object
+        # detection. We set this 0.5, meaning our model will only record detections it is 50% or above confident in
+        # being true.
         self.conf_thresh = conf_thresh
-        # This is the Intersection over Union threshold, which give us a minimum value for which the YOLO models will disregard object detections that overlap a certain percentage (here 70%) or more, as they are deemed as duplicate detections of the same objects.
+        # This is the Intersection over Union threshold, which give us a minimum value for which the YOLO models will
+        # disregard object detections that overlap a certain percentage (here 70%) or more, as they are deemed as
+        # duplicate detections of the same objects.
         self.iou_thresh = iou_thresh
-        # Initially set to None, but is declared and is an object of our StatsRecorder Class (records points, players, etc. More info in the StatsRecorder.py file)
+        # Initially set to None, but is declared and is an object of our StatsRecorder Class (records points,
+        # players, etc. More info in the StatsRecorder.py file)
         self.stats_recorder = None
 
-        # self.frame_number = 0
-        # This is the start time for when the video should start being analysed, helps skip irrelevant advertisements, player introductions, etc.
+        # self.frame_number = 0 This is the start time for when the video should start being analysed, helps skip
+        # irrelevant advertisements, player introductions, etc.
         self.start_time = start_time
 
-        # The threshold for determining if a jersey is light or dark, ranging from 0 (completely black) to 255 (completely white)
+        # The threshold for determining if a jersey is light or dark, ranging from 0 (completely black) to 255 (
+        # completely white)
         self.lightness_threshold = 130
         # Store a short history of recent, valid ball positions for custom tracker logic
         self.ball_position_history = deque(maxlen=4)
         # The maximum distance (in pixels) the ball can travel between frames
         self.max_ball_movement = 50
-        # Set to None, but used to turn the angled, 3-dimensional game footage into a 2-dimensional, birds-eye-view of the games.
+        # Set to None, but used to turn the angled, 3-dimensional game footage into a 2-dimensional, birds-eye-view
+        # of the games.
         self.homography_matrix = None
         # Again, set to None, but used as the basic template for the birds-eye-view of the game
         self.court_template = None
@@ -77,21 +91,23 @@ class BasketballAnalyser:
         self.team_b = Team('B', (0, 0, 255))
         # This is the maximum players that the model can detect frame-by-frame for basketball game, as its five-a-side
         self.max_players = 10
-        # Sets a maximum of 10 unique IDs when tracking, although this does not take into account player substitutes, it reduces the complexity of the project.
+        # Sets a maximum of 10 unique IDs when tracking, although this does not take into account player substitutes,
+        # it reduces the complexity of the project.
         self.fixed_ids = deque(range(1, self.max_players + 1))
         # Dictionary to hold the players
         self.tracker_to_fixed_id = {}
         # Threshold for ball and hoop proximity check
         self.ball_hoop_proximity_threshold = 30
-        # If the individual wishes to output the video with the tracking data, a directory can be supplied to save the video.
+        # If the individual wishes to output the video with the tracking data, a directory can be supplied to save
+        # the video.
         self.output_video_path = output_video_path
         self.video_writer = None
         # Re-checks for the ball if it is lost in the rapid change of camera angles
         self.last_ball_detection_frame = 0
         # Default interval (5 seconds @ 30 FPS), after 5 seconds will re-scan the frame for the ball object.
         self.ball_recheck_interval = 150
-        # Shot detection states (using https://github.com/avishah3/AI-Basketball-Shot-Detection-Tracker/blob/master/utils.py logic)
-        # array of tuples ((x_pos, y_pos), frame count, width, height, conf)
+        # Shot detection states (using https://github.com/avishah3/AI-Basketball-Shot-Detection-Tracker/blob/master
+        # /utils.py logic) array of tuples ((x_pos, y_pos), frame count, width, height, conf)
         self.ball_pos_shot = []
         # array of tuples ((x_pos, y_pos), frame count, width, height, conf)
         self.hoop_pos_shot = []
@@ -484,7 +500,7 @@ class BasketballAnalyser:
         if video_fps == 0: video_fps = cap.get(cv2.CAP_PROP_FPS)
         if video_fps == 0: video_fps = 30
 
-        # --- Set the re-check interval based on video FPS ---
+        # Set the re-check interval based on video FPS
         # 5 seconds is generally a safe re-check interval for ball tracking
         self.ball_recheck_interval = int(video_fps * 5)
         print(f"Ball re-check interval set to {self.ball_recheck_interval} frames ({video_fps} FPS).")
@@ -531,22 +547,21 @@ class BasketballAnalyser:
                     self._setup_birds_eye_view(frame.shape)
 
                 # Detection and Tracking
-
-                # Player Tracking (Primary model)
-                player_results = self.model.track(
-                    source=frame,
-                    conf=self.conf_thresh,
-                    iou=self.iou_thresh,
-                    tracker=self.tracker_config,
-                    classes=[PLAYER_CLASS_ID],
-                    persist=True,
-                    verbose=False
-                )[0]
-
-                # Extract tracks (Full 7-element array: x1, y1, x2, y2, track_id, conf, class_id)
-                player_tracks = player_results.boxes.data.cpu().numpy() if player_results.boxes.id is not None else np.empty(
-                    (0, 7))
-
+                # For custom MOT-SIFT Tracker
+                if isinstance(self.tracker_config, str):
+                    player_results = self.model.track(
+                        source=frame,
+                        conf=self.conf_thresh,
+                        iou=self.iou_thresh,
+                        tracker=self.tracker_config,
+                        classes=[PLAYER_CLASS_ID],
+                        persist=True,
+                        verbose=False
+                    )[0]
+                    player_tracks = player_results.boxes.data.cpu().numpy() if player_results.boxes.id is not None else np.empty(
+                        (0, 7))
+                else:
+                    player_tracks = self.tracker_config.process_frame(frame, self.frame_number)
                 # Ball/Hoop Detection (Specialised Shot model)
                 shot_results = self.shot_model.predict(
                     source=frame,
@@ -603,6 +618,8 @@ class BasketballAnalyser:
                             self.stats_recorder.add_player(fixed_id, assigned_team)
 
                     # Update stats for all currently detected players
+                for d in player_tracks:
+                    tracker_id = int(d[4])
                     fixed_id = self.tracker_to_fixed_id.get(tracker_id)
                     if fixed_id is not None:
                         centre_x = int((d[0] + d[2]) / 2)
@@ -631,7 +648,6 @@ class BasketballAnalyser:
                 self._run_shot_logic()
                 self.stats_recorder.update(current_detections, self.frame_number)
                 self._calculate_and_update_gravity(active_fixed_player_ids)
-                self._check_ball_hoop_proximity(current_detections)
 
                 # Tracking Visualisations
                 annotated_frame = frame.copy()
