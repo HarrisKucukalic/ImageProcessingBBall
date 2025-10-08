@@ -4,9 +4,13 @@ class PlayerStats:
     """Stores and manages statistics for a single tracked player."""
 
     def __init__(self, track_id, team_id):
+        # Players unique ID during the game
         self.track_id = track_id
+        # Player's Team's ID
         self.team_id = team_id
+        # Boolean value to check if the player currently has the ball.
         self.has_ball = False
+        # Stores the length of time the payer has had the ball
         self.possession_time = 0.0
         self.last_update_time = None
         # Use a double-ended queue to store recent positions for drawing a trail

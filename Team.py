@@ -1,4 +1,6 @@
 from PlayerStats import *
+
+
 class Team:
     """Represents a single team, tracking its colour, score, and player roster."""
 

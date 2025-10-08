@@ -4,10 +4,8 @@ from Team import Team
 import cv2
 import numpy as np
 from collections import deque
-from PIL import Image  # Still useful for general image manipulation, but no longer for OCR
-import cvzone  # For utils functions
 import math  # For math calculations
-# Import external shot detection utilities
+# Import external shot detection utilities - originally from this github repo: https://github.com/avishah3/AI-Basketball-Shot-Detection-Tracker/blob/master/utils.py
 from shot_utils import score, detect_down, detect_up, in_hoop_region, clean_hoop_pos, clean_ball_pos, get_device
 
 # Try to import yt_dlp, if error, set to None
@@ -16,7 +14,7 @@ try:
 except ImportError:
     yt_dlp = None
 
-# Centralised definitions for class IDs
+# Hard-coded definitions for class IDs
 PLAYER_CLASS_ID = 3
 BALL_CLASS_ID = 0
 HOOP_CLASS_ID = 1
@@ -24,90 +22,97 @@ HOOP_CLASS_ID = 1
 
 #  Helper function to find centre of box
 def get_bbox_centre(bbox):
-    """Calculates the centre of a bounding box."""
     return int((bbox[0] + bbox[2]) / 2), int((bbox[1] + bbox[3]) / 2)
 
 
 class BasketballAnalyser:
     """
-    Main class to orchestrate the detection, tracking, and team-based analysis.
-    Now supports real-time display on local PCs via OpenCV windows.
+    Main class to orchestrate the detection, player/ball tracking, and team-based analysis.
     """
 
-    def __init__(self, model_path, video_source, tracker_config='botsort.yaml', conf_thresh=0.5, iou_thresh=0.7,
-                 start_time="0:00", output_video_path=None):  # Added output_video_path for optional recording
-
-        # --- PRIMARY MODEL (Tracks Players) ---
+    def __init__(self, model_path, video_source, tracker_config='botsort.yaml', conf_thresh=0.5, iou_thresh=0.7, start_time="0:00", output_video_path=None):
+        """
+        Constructor for class, uses the player tracking model trained by the team
+        and the shot detector model created by https://github.com/avishah3/AI-Basketball-Shot-Detection-Tracker/blob/master/utils.py
+        """
+        # Our trained YOLO model that is used for player tracking
         self.model = YOLO(model_path)
 
-        # --- SECONDARY MODEL (Detects Ball/Hoop using specialized weights) ---
+        # Secondary model imported from the GitHub repo above, which is used to identify the ball and basket objects more accurately.
         try:
             self.shot_model = YOLO("shot_detector_external.pt")
-            print("Successfully loaded specialized shot model 'shot_detector_external.pt'.")
+            print("Successfully loaded specialised shot model 'shot_detector_external.pt' from https://github.com/avishah3/AI-Basketball-Shot-Detection-Tracker/blob/master/utils.py")
         except Exception as e:
-            # Fallback to using the primary model for all detections if specialized model fails to load
+            # Fallback to using the primary model for all detections if hoop/ball shot detector fails
             print(
-                f"Warning: Could not load specialized shot model 'shot_detector_external.pt'. Falling back to primary model for ball/hoop. Error: {e}")
+                f"Warning: Could not load shot model 'shot_detector_external.pt'. Falling back to primary model for ball/hoop detection. Error: {e}")
             self.shot_model = self.model
 
         self.video_source = video_source
+        # Used to define between ByteTrack and BoT-SORT
         self.tracker_config = tracker_config
+        # This is our confidence threshold, which essentially is the minimum model confidence for an object detection. We set this 0.5, meaning our model will only record detecions it is 50% or above confident in being true.
         self.conf_thresh = conf_thresh
+        # This is the Intersection over Union threshold, which give us a minimum value for which the YOLO models will disregard object detections that overlap a certain percentage (here 70%) or more, as they are deemed as duplicate detections of the same objects.
         self.iou_thresh = iou_thresh
+        # Initially set to None, but is declared and is an object of our StatsRecorder Class (records points, players, etc. More info in the StatsRecorder.py file)
         self.stats_recorder = None
-        self.frame_number = 0
+
+        # self.frame_number = 0
+        # This is the start time for when the video should start being analysed, helps skip irrelevant advertisements, player introductions, etc.
         self.start_time = start_time
-        self.teams_initialised = False
-        # The threshold for determining if a jersey is light or dark (0-255)
+
+        # The threshold for determining if a jersey is light or dark, ranging from 0 (completely black) to 255 (completely white)
         self.lightness_threshold = 130
         # Store a short history of recent, valid ball positions for custom tracker logic
         self.ball_position_history = deque(maxlen=4)
         # The maximum distance (in pixels) the ball can travel between frames
         self.max_ball_movement = 50
+        # Set to None, but used to turn the angled, 3-dimensional game footage into a 2-dimensional, birds-eye-view of the games.
         self.homography_matrix = None
+        # Again, set to None, but used as the basic template for the birds-eye-view of the game
         self.court_template = None
-        team_a_colour = (0, 255, 0)  # Green
-        team_b_colour = (0, 0, 255)  # Red
-        self.team_a = Team('A', team_a_colour)
-        self.team_b = Team('B', team_b_colour)
+        # Team colours, a is green, b is red (BGR)
+        self.team_a = Team('A', (0, 255, 0))
+        self.team_b = Team('B', (0, 0, 255))
+        # This is the maximum players that the model can detect frame-by-frame for basketball game, as its five-a-side
         self.max_players = 10
+        # Sets a maximum of 10 unique IDs when tracking, although this does not take into account player substitutes, it reduces the complexity of the project.
         self.fixed_ids = deque(range(1, self.max_players + 1))
+        # Dictionary to hold the players
         self.tracker_to_fixed_id = {}
         # Threshold for ball and hoop proximity check
         self.ball_hoop_proximity_threshold = 30
-
-        # Output video file logic
+        # If the individual wishes to output the video with the tracking data, a directory can be supplied to save the video.
         self.output_video_path = output_video_path
         self.video_writer = None
-
-        # New ball re-check logic:
+        # Re-checks for the ball if it is lost in the rapid change of camera angles
         self.last_ball_detection_frame = 0
-        # Default interval (5 seconds @ 30 FPS), will be updated with actual FPS later
+        # Default interval (5 seconds @ 30 FPS), after 5 seconds will re-scan the frame for the ball object.
         self.ball_recheck_interval = 150
-
-        # --- SHOT DETECTION STATE (using external logic's requirements) ---
-        self.ball_pos_shot = []  # array of tuples ((x_pos, y_pos), frame count, width, height, conf)
-        self.hoop_pos_shot = []  # array of tuples ((x_pos, y_pos), frame count, width, height, conf)
-        self.shot_up = False  # Ball has reached the 'up' phase of a shot
-        self.shot_down = False  # Ball has reached the 'down' phase of a shot
+        # Shot detection states (using https://github.com/avishah3/AI-Basketball-Shot-Detection-Tracker/blob/master/utils.py logic)
+        # array of tuples ((x_pos, y_pos), frame count, width, height, conf)
+        self.ball_pos_shot = []
+        # array of tuples ((x_pos, y_pos), frame count, width, height, conf)
+        self.hoop_pos_shot = []
+        # Ball has reached the 'up' phase of a shot
+        self.shot_up = False
+        # Ball has reached the 'down' phase of a shot
+        self.shot_down = False
         self.up_frame = 0
         self.down_frame = 0
-        self.shot_overlay_text = "Waiting..."
-        self.shot_overlay_color = (0, 0, 0)
-        self.fade_frames = 30  # Duration of the result fade (30 frames = 1 second at 30 FPS)
-        self.fade_counter = 0
-        self.device = get_device()  # Get CUDA/CPU device from shot_utils
+        # Get CUDA/CPU device
+        self.device = get_device()
 
     def _analyse_jersey_properties(self, frame, bbox):
         """
-        Determines team assignment by analysing lightness.
-        Note: OCR components removed, returns None for jersey crop.
+        Determines team assignment by analysing jersey lightness.
         """
         x1, y1, x2, y2 = map(int, bbox)
         if x1 >= x2 or y1 >= y2:
             return None, None
 
-        # Define a tight region for the torso/jersey (middle 40% horizontally, upper-middle vertically)
+        # Define a tight region for the torso/jersey
         box_width = x2 - x1
         box_height = y2 - y1
         torso_x1 = x1 + int(box_width * 0.25)
@@ -128,7 +133,7 @@ class BasketballAnalyser:
         if jersey_img_crop.size == 0:
             return None, None
 
-        # 1. Team Assignment (Lightness Check)
+        # Team Assignment (Lightness Check)
         gray_img = cv2.cvtColor(jersey_img_crop, cv2.COLOR_BGR2GRAY)
         average_intensity = np.mean(gray_img)
 
@@ -143,7 +148,7 @@ class BasketballAnalyser:
     def _track_ball(self, detections):
         """
         Refines ball tracking by removing outliers and interpolating short gaps.
-        Now includes logic to force re-detection periodically for re-acquisition.
+        Includes logic to force re-detection periodically for re-acquisition.
         """
         # Find the highest confidence ball detection in the current frame
         ball_detections = [d for d in detections if int(d[6]) == BALL_CLASS_ID]
@@ -153,7 +158,7 @@ class BasketballAnalyser:
             best_ball = max(ball_detections, key=lambda x: x[5])  # Index 5 is confidence
             current_ball_centre = get_bbox_centre(best_ball[0:4])
 
-        # --- Re-acquisition Logic (Highest Priority) ---
+        # Ball re-acquisition logic
         is_recheck_frame = (self.frame_number - self.last_ball_detection_frame) > self.ball_recheck_interval
 
         if is_recheck_frame and current_ball_centre is not None:
@@ -162,8 +167,8 @@ class BasketballAnalyser:
             self.ball_position_history.clear()
             print(f"Ball re-acquisition forced at frame {self.frame_number}. History reset.")
 
-        # --- Standard Outlier Rejection ---
-        # This only runs if we have a new position AND we have a history to compare it to,
+        # Outlier Rejection
+        # This only detr_runs if we have a new position AND we have a history to compare it to,
         # and it's NOT a forced re-acquisition frame (handled above).
         elif current_ball_centre and self.ball_position_history:
             last_known_pos = self.ball_position_history[-1]
@@ -198,9 +203,10 @@ class BasketballAnalyser:
         ball_detections = [d for d in detections if int(d[6]) == BALL_CLASS_ID]
         hoop_detections = [d for d in detections if int(d[6]) == HOOP_CLASS_ID]
 
-        # 1. Update Ball Position History (for shot logic)
+        # Update Ball Position History (for shot logic)
         if ball_detections:
-            best_ball = max(ball_detections, key=lambda x: x[5])  # Highest confidence ball
+            # Highest detection confidence for the ball object
+            best_ball = max(ball_detections, key=lambda x: x[5])
             x1, y1, x2, y2 = map(int, best_ball[0:4])
             w, h = x2 - x1, y2 - y1
             center = get_bbox_centre(best_ball[0:4])
@@ -211,7 +217,7 @@ class BasketballAnalyser:
             if conf > self.conf_thresh:  # Use the analyser's confidence threshold
                 self.ball_pos_shot.append((center, self.frame_number, w, h, conf))
 
-        # 2. Update Hoop Position History (for shot logic)
+        # Update Hoop Position History (for shot logic)
         if hoop_detections:
             best_hoop = max(hoop_detections, key=lambda x: x[5])  # Highest confidence hoop
             x1, y1, x2, y2 = map(int, best_hoop[0:4])
@@ -222,7 +228,7 @@ class BasketballAnalyser:
             if conf > 0.5:  # Use a reasonable fixed confidence for the static hoop
                 self.hoop_pos_shot.append((center, self.frame_number, w, h, conf))
 
-        # 3. Clean Motion using external utilities
+        # Clean Motion using external utilities
         self.ball_pos_shot = clean_ball_pos(self.ball_pos_shot, self.frame_number)
         if len(self.hoop_pos_shot) > 1:
             self.hoop_pos_shot = clean_hoop_pos(self.hoop_pos_shot)
@@ -232,18 +238,8 @@ class BasketballAnalyser:
         Implements the state machine for shot detection using the cleaned ball and hoop data.
         Updates self.stats_recorder.makes and attempts.
         """
-        # --- Decrement Fade Counter ---
-        if self.fade_counter > 0:
-            self.fade_counter -= 1
-        else:
-            # Reset text to neutral state once fade is complete, preventing the score from being drawn here.
-            if self.shot_overlay_text != "Waiting...":
-                self.shot_overlay_text = "Waiting..."
-                self.shot_overlay_color = (0, 0, 0)  # Black/Neutral
-
-        # --- Shot Detection Logic ---
         if len(self.hoop_pos_shot) > 0 and len(self.ball_pos_shot) > 0:
-            # Detecting when ball is in 'up' and 'down' area - ball can only be in 'down' area after it is in 'up'
+            # Detecting when ball is in 'up' and 'down' area
             if not self.shot_up:
                 self.shot_up = detect_up(self.ball_pos_shot, self.hoop_pos_shot)
                 if self.shot_up:
@@ -254,16 +250,15 @@ class BasketballAnalyser:
                 if self.shot_down:
                     self.down_frame = self.ball_pos_shot[-1][1]
 
-            # If ball goes from 'up' area to 'down' area in that order, increase attempt and reset
-            # The original code checked every 10 frames (self.frame_count % 10 == 0). We'll keep that idea for throttling.
+            # If ball goes from 'up' area to 'down' area, register an attempt
             if self.frame_number % 10 == 0:
                 if self.shot_up and self.shot_down and self.up_frame < self.down_frame:
 
-                    # 1. Update Stats Recorder
+                    # Update Stats Recorder for an attempt
                     self.stats_recorder.attempts += 1
                     print(f"Shot Attempt Detected! Total attempts: {self.stats_recorder.attempts}")
 
-                    # 2. Check for Score (using external utility)
+                    # Check for Score
                     if score(self.ball_pos_shot, self.hoop_pos_shot):
                         self.stats_recorder.makes += 1
 
@@ -274,31 +269,19 @@ class BasketballAnalyser:
                             team_id = self.stats_recorder.player_stats[player_id].team_id
                             team = self.stats_recorder.teams.get(team_id)
                             if team:
-                                team.update_score()  # Update team score
-                            self.stats_recorder.player_stats[player_id].update_points(2)  # Update individual points
+                                team.update_score()
+                            self.stats_recorder.player_stats[player_id].update_points(2)
 
-                        self.shot_overlay_color = (0, 255, 0)  # Green for make (BGR)
-                        self.shot_overlay_text = "MAKE!"
                         print("SHOT MADE!")
 
                     else:
-                        self.shot_overlay_color = (0, 0, 255)  # Red for miss (BGR)
-                        self.shot_overlay_text = "MISS"
                         print("SHOT MISSED.")
 
-                    # 3. Start Visual Fade
-                    self.fade_counter = self.fade_frames
-
-                    # 4. Reset Shot State
+                    # Reset Shot State
                     self.shot_up = False
                     self.shot_down = False
                     self.up_frame = 0
                     self.down_frame = 0
-
-    def _check_ball_hoop_proximity(self, detections):
-        """Checks if the ball and hoop objects are close to each other."""
-        # This is now largely redundant as shot logic is primary, suppressing print
-        pass
 
     def _setup_birds_eye_view(self, frame_shape):
         """Creates the court template with a detailed outline and calculates the homography matrix."""
@@ -392,27 +375,11 @@ class BasketballAnalyser:
             ball_x, ball_y = map(int, self.stats_recorder.ball_position)
             cv2.circle(frame, (ball_x, ball_y), 7, (255, 165, 0), -1)
 
-        # --- Draw Hoop for shot detection debugging/visualisation (optional, using cleaned pos) ---
+        # Draw Hoop for shot detection
         if len(self.hoop_pos_shot) > 0:
             hoop_center = self.hoop_pos_shot[-1][0]
-            cv2.circle(frame, hoop_center, 5, (128, 128, 0), -1)  # Draw center of cleaned hoop pos
-
-        # --- Draw Shot Result Overlay ---
-        # Note: We only draw the transient "MAKE!" or "MISS" text here, not the continuous score.
-        if self.fade_counter > 0 and self.shot_overlay_text != "Waiting...":
-            # Calculate text size to position it at the right top corner
-            (text_width, text_height), _ = cv2.getTextSize(self.shot_overlay_text, cv2.FONT_HERSHEY_SIMPLEX, 3, 6)
-            text_x = frame.shape[1] - text_width - 40  # Right alignment with some margin
-            text_y = 100  # Top margin
-
-            # Display overlay text
-            cv2.putText(frame, self.shot_overlay_text, (text_x, text_y), cv2.FONT_HERSHEY_SIMPLEX, 3,
-                        self.shot_overlay_color, 6)
-
-            # Gradually fade out color after shot
-            alpha = 0.2 * (self.fade_counter / self.fade_frames)
-            # Add a faint coloured overlay effect to the whole screen for flair
-            frame = cv2.addWeighted(frame, 1 - alpha, np.full_like(frame, self.shot_overlay_color), alpha * 0.5, 0)
+            # Draw center of cleaned hoop position
+            cv2.circle(frame, hoop_center, 5, (128, 128, 0), -1)
 
         return frame
 
@@ -423,17 +390,17 @@ class BasketballAnalyser:
         stats_h, stats_w = 250, 400
         stats_frame = np.zeros((stats_h, stats_w, 3), dtype=np.uint8)
 
-        # 1. Draw Game Timer
-        # This now relies on the current_time_string property in StatsRecorder
+        # Draw game timer
+        # This relies on the current_time_string property in StatsRecorder
         time_text = f"Game Time: {self.stats_recorder.current_time_string}"
         cv2.putText(stats_frame, time_text, (10, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2, cv2.LINE_AA)
 
-        # 2. Draw Shot Stats (New Section)
+        # Draw Shot Stats
         shot_stats_text = f"Shots: {self.stats_recorder.makes} / {self.stats_recorder.attempts}"
         cv2.putText(stats_frame, shot_stats_text, (10, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 0), 2,
                     cv2.LINE_AA)
 
-        # 3. Draw Gravity Score and Player ID (Shifted Down)
+        # Draw Gravity Score and Player ID
         gravity_id = self.stats_recorder.highest_gravity_player_id
         pressure_player_text = f"P{gravity_id}"
 
@@ -452,7 +419,9 @@ class BasketballAnalyser:
         cv2.imshow("Game Stats", stats_frame)
 
     def _calculate_and_update_gravity(self, current_player_ids):
-        """Calculates gravity exerted by each defender and identifies the one with the highest pressure."""
+        """Calculates gravity exerted by each defender and identifies the one with the highest pressure.
+        Gravity here is how much a player with the ball draws in the defenders, as well as how far away a defender pushes
+        the offence from the basket"""
         player_with_ball_id = self.stats_recorder.player_with_ball
         # Reset high gravity player each frame
         self.stats_recorder.highest_gravity_player_id = None
@@ -494,7 +463,7 @@ class BasketballAnalyser:
         original_video_source = self.video_source
         video_url = self.video_source
         video_fps = 0
-        w, h = 0, 0  # Will be populated once video capture is opened
+        w, h = 0, 0
 
         if 'youtube.com' in self.video_source or 'youtu.be' in self.video_source:
             try:
@@ -518,7 +487,6 @@ class BasketballAnalyser:
         # --- Set the re-check interval based on video FPS ---
         # 5 seconds is generally a safe re-check interval for ball tracking
         self.ball_recheck_interval = int(video_fps * 5)
-        self.fade_frames = int(video_fps * 1)  # 1 second duration for fade
         print(f"Ball re-check interval set to {self.ball_recheck_interval} frames ({video_fps} FPS).")
 
         # Initialise VideoWriter if output_video_path is provided
@@ -529,7 +497,7 @@ class BasketballAnalyser:
         else:
             print("No output video path provided. Displaying results in real-time.")
 
-        # --- Initialise OpenCV windows for local execution ---
+        # Initialise OpenCV windows for local execution
         cv2.namedWindow("Basketball Analysis", cv2.WINDOW_NORMAL)
         cv2.resizeWindow("Basketball Analysis", 1280, 720)
         cv2.namedWindow("Tactical View", cv2.WINDOW_NORMAL)
@@ -562,9 +530,9 @@ class BasketballAnalyser:
                     # Setup birds eye view template and homography matrix
                     self._setup_birds_eye_view(frame.shape)
 
-                # --- 1. DETECTION & TRACKING ---
+                # Detection and Tracking
 
-                # 1A. Player Tracking (Primary model)
+                # Player Tracking (Primary model)
                 player_results = self.model.track(
                     source=frame,
                     conf=self.conf_thresh,
@@ -579,7 +547,7 @@ class BasketballAnalyser:
                 player_tracks = player_results.boxes.data.cpu().numpy() if player_results.boxes.id is not None else np.empty(
                     (0, 7))
 
-                # 1B. Ball/Hoop Detection (Specialized Shot model)
+                # Ball/Hoop Detection (Specialised Shot model)
                 shot_results = self.shot_model.predict(
                     source=frame,
                     conf=self.conf_thresh,
@@ -602,7 +570,7 @@ class BasketballAnalyser:
                 current_detections = np.array(shot_detections_7d + list(player_tracks))
                 current_player_detections = player_tracks
 
-                # --- 2. ID MANAGEMENT ---
+                # Player ID management
                 current_tracker_ids = {int(d[4]) for d in current_player_detections}
 
                 # Identify lost players and return their fixed IDs to the pool
@@ -611,7 +579,6 @@ class BasketballAnalyser:
                     if tracker_id not in current_tracker_ids:
                         self.fixed_ids.append(fixed_id)
                         ids_to_remove.append(tracker_id)
-                        # No need to check self.fixed_id_to_jersey_number anymore
 
                 for tracker_id in ids_to_remove:
                     fixed_id = self.tracker_to_fixed_id.get(tracker_id)
@@ -625,9 +592,9 @@ class BasketballAnalyser:
                     bbox = d[0:4]
 
                     # Analyse jersey properties (team colour and get crop)
-                    assigned_team, _ = self._analyse_jersey_properties(frame, bbox)  # No jersey_crop needed
+                    assigned_team, _ = self._analyse_jersey_properties(frame, bbox)
 
-                    # 1. Assign Fixed ID if new
+                    # Assign Fixed ID if new
                     if tracker_id not in self.tracker_to_fixed_id and self.fixed_ids:
                         fixed_id = self.fixed_ids.popleft()
                         self.tracker_to_fixed_id[tracker_id] = fixed_id
@@ -647,11 +614,11 @@ class BasketballAnalyser:
                 # Now get the list of active fixed player IDs
                 active_fixed_player_ids = list(self.stats_recorder.player_stats.keys())
 
-                # --- 3. BALL TRACKING & SHOT DATA GATHERING ---
-                # A. Update the primary ball position (used for possession/gravity/map)
+                # Ball tracking and stat recording
+                # Update the primary ball position (used for possession/gravity/map)
                 self.stats_recorder.ball_position = self._track_ball(current_detections)
 
-                # B. Gather and clean data for robust SHOT DETECTION
+                # Gather and clean data for better shot detection
                 self._process_shot_detections(current_detections)
 
                 # If a new ball position was successfully found (either via detection or interpolation),
@@ -659,27 +626,28 @@ class BasketballAnalyser:
                 if self.stats_recorder.ball_position is not None:
                     self.last_ball_detection_frame = self.frame_number
 
-                # --- 4. ANALYTICS EXECUTION ---
-                self._run_shot_logic()  # Must run before stats update to catch scores
+                # Basketball Analytics
+                # Must run before stats update to catch scores
+                self._run_shot_logic()
                 self.stats_recorder.update(current_detections, self.frame_number)
                 self._calculate_and_update_gravity(active_fixed_player_ids)
                 self._check_ball_hoop_proximity(current_detections)
 
-                # --- 5. VISUALISATION ---
+                # Tracking Visualisations
                 annotated_frame = frame.copy()
                 annotated_frame = self._draw_tracks(annotated_frame, active_fixed_player_ids)
 
-                # --- Draw and Show Windows ---
+                # Draw and Show Windows
                 stats_frame_from_recorder = self.stats_recorder.get_stats_frame()
                 cv2.imshow("Game Stats", stats_frame_from_recorder)  # Display the frame generated by the recorder
 
                 self._draw_birds_eye_view(active_fixed_player_ids)
                 cv2.imshow("Basketball Analysis", annotated_frame)
 
-                # WRITE FRAME TO FILE
+                # Save video (if option is selected by user)
                 if self.video_writer:
                     self.video_writer.write(annotated_frame)
-
+                # Press 'q' to quit the live analysis
                 if cv2.waitKey(1) & 0xFF == ord("q"): break
         except Exception as e:
             print(f"An error occurred: {e}")

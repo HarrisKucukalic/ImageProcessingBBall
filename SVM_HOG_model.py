@@ -17,12 +17,12 @@ class SVM_HOG_ObjectDetector:
 
     This class is designed to train on images and labels provided in the YOLO format.
     It learns to distinguish between object patches (positives) and background patches (negatives).
-    Detection is performed using a sliding window and non-maximum suppression. 🖼️
+    Detection is performed using a sliding window and non-maximum suppression.
     """
 
     def __init__(self, window_size=(64, 128), orientations=9, pixels_per_cell=(8, 8), cells_per_block=(2, 2)):
         """
-        Initializes the detector's parameters.
+        Initialises the detector's parameters.
 
         Args:
             window_size (tuple): The (width, height) of the detection window. All image patches will be resized to this.
@@ -35,7 +35,7 @@ class SVM_HOG_ObjectDetector:
         self.pixels_per_cell = pixels_per_cell
         self.cells_per_block = cells_per_block
 
-        # Initialize model components to None. They will be created during training.
+        # Initialise model components to None. They will be created during training.
         self.model = LinearSVC(C=1.0, max_iter=10000, dual="auto")
         self.scaler = StandardScaler()
         print("SVM-HOG Detector Initialised.")
@@ -63,24 +63,24 @@ class SVM_HOG_ObjectDetector:
 
         # Iterate over all the provided directory pairs
         for image_dir, label_dir in zip(image_dirs, label_dirs):
-            print(f"\n--- Loading data from {image_dir} ---")
+            print(f"\nLoading data from {image_dir}")
             if not os.path.isdir(image_dir):
                 print(f"DEBUG: Image directory not found at: {image_dir}")
                 continue
             for filename in os.listdir(image_dir):
                 try:
-                    # 1. Check if the file is a valid image
+                    # Check if the file is a valid image
                     if not filename.lower().endswith(('.jpg', '.jpeg', '.png')):
                         continue
 
-                    # 2. Construct the full, guaranteed-to-exist image path
+                    # Construct the full, guaranteed-to-exist image path
                     img_path = os.path.join(image_dir, filename)
 
-                    # 3. Derive the basename for the label file by splitting at the first dot
+                    # Derive the basename for the label file by splitting at the first dot
                     basename, extension = os.path.splitext(filename)
                     label_path = os.path.join(label_dir, basename + '.txt')
 
-                    # --- Sanity Checks ---
+                    # Debugging
                     if not os.path.exists(label_path):
                         print(f"DEBUG: Image found '{img_path}', but label not found at '{label_path}'")
                         continue
@@ -90,7 +90,6 @@ class SVM_HOG_ObjectDetector:
                         print(f"DEBUG: Failed to read image file: {img_path}")
                         continue
 
-                    # --- The rest of your logic remains the same ---
                     h, w, _ = image.shape
                     positive_boxes = []
 
@@ -146,13 +145,13 @@ class SVM_HOG_ObjectDetector:
 
     def train(self, image_dirs, label_dirs):
         """
-        MODIFIED: Trains the SVM model using lists of directories.
+        Trains the SVM model using lists of directories.
 
         Args:
             image_dirs (list): List of paths to directories containing images.
             label_dirs (list): List of paths to directories containing YOLO labels.
         """
-        # 1. Load data and extract HOG features from all specified directories
+        # Load data and extract HOG features from all specified directories
         X, y = self._load_yolo_data(image_dirs, label_dirs)
 
         if len(y) == 0:
@@ -161,70 +160,17 @@ class SVM_HOG_ObjectDetector:
 
         print(f"Total data loaded: {len(y)} samples ({np.sum(y)} positive, {len(y) - np.sum(y)} negative).")
 
-        # 2. Fit the scaler and transform the data
+        # Fit the scaler and transform the data
         print("Scaling features...")
         X_scaled = self.scaler.fit_transform(X)
 
-        # 3. Train the SVM classifier
+        # Train the SVM classifier
         print("Training SVM classifier...")
         self.model.fit(X_scaled, y)
         print("Training complete. ✅")
 
-    def detect(self, image_path, confidence_threshold=0.5, scale_factor=1.5, step_size=16):
-        """
-        Detects objects in a new image using a sliding window.
-
-        Args:
-            image_path (str): Path to the image to perform detection on.
-            confidence_threshold (float): Minimum confidence score from the SVM to count as a detection.
-            scale_factor (float): Factor to downscale the image at each pyramid level.
-            step_size (int): The step size for the sliding window in pixels.
-
-        Returns:
-            list: A list of final bounding boxes [x_min, y_min, x_max, y_max].
-        """
-        detections = []
-        image = cv2.imread(image_path)
-        original_h, original_w, _ = image.shape
-
-        # --- Image Pyramid ---
-        current_scale = 1.0
-        current_img = image.copy()
-
-        while current_img.shape[0] >= self.window_size[1] and current_img.shape[1] >= self.window_size[0]:
-            # --- Sliding Window ---
-            for y in range(0, current_img.shape[0] - self.window_size[1] + 1, step_size):
-                for x in range(0, current_img.shape[1] - self.window_size[0] + 1, step_size):
-                    # Extract patch
-                    patch = current_img[y:y + self.window_size[1], x:x + self.window_size[0]]
-
-                    # Get features and classify
-                    features = self._extract_hog_features(patch).reshape(1, -1)
-                    features_scaled = self.scaler.transform(features)
-
-                    # Use decision_function for a confidence score
-                    confidence = self.model.decision_function(features_scaled)
-
-                    if confidence > confidence_threshold:
-                        # Map window back to original image coordinates
-                        x_min = int(x / current_scale)
-                        y_min = int(y / current_scale)
-                        x_max = int((x + self.window_size[0]) / current_scale)
-                        y_max = int((y + self.window_size[1]) / current_scale)
-                        detections.append([x_min, y_min, x_max, y_max, confidence[0]])
-
-            # Downscale the image for the next pyramid level
-            new_width = int(current_img.shape[1] / scale_factor)
-            new_height = int(current_img.shape[0] / scale_factor)
-            current_img = cv2.resize(current_img, (new_width, new_height))
-            current_scale *= (original_w / new_width)
-
-        # --- Non-Maximum Suppression ---
-        final_boxes = self._non_max_suppression(np.array(detections), overlap_thresh=0.3)
-        return final_boxes
-
     def _non_max_suppression(self, boxes, overlap_thresh):
-        """A simple Non-Maximum Suppression implementation."""
+        """Non-Maximum Suppression implementation."""
         if len(boxes) == 0:
             return []
 
@@ -256,6 +202,59 @@ class SVM_HOG_ObjectDetector:
             idxs = np.delete(idxs, np.concatenate(([last], np.where(overlap > overlap_thresh)[0])))
 
         return boxes[pick][:, :4].astype(int).tolist()
+
+    def detect(self, image_path, confidence_threshold=0.5, scale_factor=1.5, step_size=16):
+        """
+        Detects objects in a new image using a sliding window.
+
+        Args:
+            image_path (str): Path to the image to perform detection on.
+            confidence_threshold (float): Minimum confidence score from the SVM to count as a detection.
+            scale_factor (float): Factor to downscale the image at each pyramid level.
+            step_size (int): The step size for the sliding window in pixels.
+
+        Returns:
+            list: A list of final bounding boxes [x_min, y_min, x_max, y_max].
+        """
+        detections = []
+        image = cv2.imread(image_path)
+        original_h, original_w, _ = image.shape
+
+        # Image Pyramid
+        current_scale = 1.0
+        current_img = image.copy()
+
+        while current_img.shape[0] >= self.window_size[1] and current_img.shape[1] >= self.window_size[0]:
+            # Sliding Window
+            for y in range(0, current_img.shape[0] - self.window_size[1] + 1, step_size):
+                for x in range(0, current_img.shape[1] - self.window_size[0] + 1, step_size):
+                    # Extract patch
+                    patch = current_img[y:y + self.window_size[1], x:x + self.window_size[0]]
+
+                    # Get features and classify
+                    features = self._extract_hog_features(patch).reshape(1, -1)
+                    features_scaled = self.scaler.transform(features)
+
+                    # Use decision_function for a confidence score
+                    confidence = self.model.decision_function(features_scaled)
+
+                    if confidence > confidence_threshold:
+                        # Map window back to original image coordinates
+                        x_min = int(x / current_scale)
+                        y_min = int(y / current_scale)
+                        x_max = int((x + self.window_size[0]) / current_scale)
+                        y_max = int((y + self.window_size[1]) / current_scale)
+                        detections.append([x_min, y_min, x_max, y_max, confidence[0]])
+
+            # Downscale the image for the next pyramid level
+            new_width = int(current_img.shape[1] / scale_factor)
+            new_height = int(current_img.shape[0] / scale_factor)
+            current_img = cv2.resize(current_img, (new_width, new_height))
+            current_scale *= (original_w / new_width)
+
+        # Non-Maximum Suppression (NMS)
+        final_boxes = self._non_max_suppression(np.array(detections), overlap_thresh=0.3)
+        return final_boxes
 
     def evaluate_model(self, image_dirs, label_dirs):
         """
@@ -290,16 +289,15 @@ class SVM_HOG_ObjectDetector:
         # Make predictions
         y_pred = self.model.predict(X_eval_scaled)
 
-        # --- Generate and Print Reports ---
-        print("\n--- Classification Report ---")
+        # Generate performance reports
+        print("\nClassification Report")
         # target_names: 0 is 'background', 1 is 'object'
         print(classification_report(y_true, y_pred, target_names=['background', 'object']))
-
-        print("--- Confusion Matrix ---")
+        print("Confusion Matrix")
         cm = confusion_matrix(y_true, y_pred)
         print(cm)
 
-        # Optional: Plot the confusion matrix for a nice visual
+        # Confusion Matrix Plot
         plt.figure(figsize=(6, 5))
         sns.heatmap(cm, annot=True, fmt='d', cmap='Blues',
                     xticklabels=['background', 'object'],

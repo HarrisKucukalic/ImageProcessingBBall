@@ -1,11 +1,7 @@
 import cv2
 import numpy as np
-from PlayerStats import PlayerStats
-from Team import Team
 from Team import *
-
 HOOP_CLASS_ID = 1
-
 
 class StatsRecorder:
     """
@@ -18,14 +14,16 @@ class StatsRecorder:
         self.teams = {team_a.team_id: team_a, team_b.team_id: team_b}
         self.ball_position = None
         self.hoop_position = None
-        self.last_score_frame = -100  # Cooldown to prevent duplicate scores
+        # Cooldown to prevent duplicate scores
+        self.last_score_frame = -100
         self.player_with_ball = None
         self.possession_team = None
         self.gravity_score = 0.0
         self.highest_gravity_player_id = None
-        self.current_frame_number = 0  # To track game time
+        # To track game time
+        self.current_frame_number = 0
 
-        # --- Shot Detection Stats ---
+        # Shot Detection Stats
         self.makes = 0
         self.attempts = 0
 
@@ -67,10 +65,7 @@ class StatsRecorder:
             self.hoop_position = max(hoop_detections, key=lambda x: x[5])[0:4]
 
         self._update_possession()
-
-        # Note: Makes/attempts are updated by the Shot Detection logic in BasketballAnalyser
-
-    # Removed the old _check_for_score(frame_number) method as shot logic now handles scoring and points updates.
+        # Makes/attempts are updated by the Shot Detection logic in BasketballAnalyser
 
     def _update_possession(self):
         """Determines which player and team has possession of the ball."""
@@ -127,31 +122,23 @@ class StatsRecorder:
         possession_a = " (P)" if self.possession_team == team_a.team_id else ""
         possession_b = " (P)" if self.possession_team == team_b.team_id else ""
 
-        # --- Line 1: Game Time ---
+        # Line 1: Game Time
         time_text = f"Time: {self.current_time_string}"
         cv2.putText(stats_frame, time_text, (20, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
 
-        # --- Line 2: Team Scores ---
+        # Line 2: Team Scores
         score_text_a = f"Team {team_a.team_id}: {team_a.score}{possession_a}"
         score_text_b = f"Team {team_b.team_id}: {team_b.score}{possession_b}"
 
         cv2.putText(stats_frame, score_text_a, (20, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.7, team_a.primary_colour, 2)
         cv2.putText(stats_frame, score_text_b, (200, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.7, team_b.primary_colour, 2)
 
-        # --- Line 3: Shot Stats ---
+        # Line 3: Shot Stats
         shot_text = f"Shots: {self.makes} / {self.attempts}"
         cv2.putText(stats_frame, shot_text, (20, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 165, 0), 2)
 
-        # --- Line 4: Defensive Gravity ---
+        # Line 4: Defensive Gravity
         gravity_text = f"Defensive Gravity: {self.gravity_score:.2f}"
         cv2.putText(stats_frame, gravity_text, (20, 120), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (200, 200, 200), 2)
-
-        # Display individual player stats (Space is limited, showing fewer lines)
-        y_offset = 150
-        # for player_id, stats in self.player_stats.items():
-        #     player_info_text = f"P{player_id} ({stats.team_id}): {stats.points} pts"
-        #     cv2.putText(stats_frame, player_info_text, (20, y_offset), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255),
-        #                 1)
-        #     y_offset += 25
 
         return stats_frame

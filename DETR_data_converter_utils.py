@@ -72,7 +72,7 @@ def convert_yolo_to_coco_json(yolo_image_dir: str, yolo_label_dir: str, output_j
         categories (dict): Dictionary mapping {class_index (int): class_name (str)}.
     """
 
-    # Initialize COCO structure components
+    # Initialise COCO structure components
     coco_output = {
         "images": [],
         "annotations": [],
@@ -167,7 +167,7 @@ def convert_yolo_to_coco_json(yolo_image_dir: str, yolo_label_dir: str, output_j
 
 def run_split_conversion(split_name, categories, base_dir='./yolo_dataset'):
     """
-    Sets up the paths and runs the conversion function for a single dataset split.
+    Sets up the paths and detr_runs the conversion function for a single dataset split.
     """
     YOLO_IMAGES_DIR = os.path.join(base_dir,  split_name, 'images')
     YOLO_LABELS_DIR = os.path.join(base_dir, split_name, 'labels')
