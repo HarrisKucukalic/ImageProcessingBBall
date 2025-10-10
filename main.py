@@ -321,48 +321,48 @@ if __name__ == "__main__":
        Run YOLOv12n Analyser with ByteTrack or BoT-SORT
     """
 
-    # MODEL_PATH = "Basketball_Detection/yolov12n.pt_200_epochs_64_batch_size_augmented/weights/best.pt"
-    # VIDEO_SOURCE = "https://www.youtube.com/watch?v=6OTIqjh0eKc&list=PLiVlTTnDnAcsX_H-K9sy98OKvjGtpYSi-&index=1&t=443s"
-    # START_TIME = "7:00"
-    # try:
-    #     analyser = BasketballAnalyser(
-    #         model_path=MODEL_PATH,
-    #         video_source=VIDEO_SOURCE,
-    #         start_time=START_TIME
-    #     )
-    #     analyser.process_video()
-    # except Exception as e:
-    #     print(f"An error occurred: {e}")
+    MODEL_PATH = "Basketball_Detection/yolov12n.pt_200_epochs_64_batch_size_augmented/weights/best.pt"
+    VIDEO_SOURCE = "https://www.youtube.com/watch?v=6OTIqjh0eKc&list=PLiVlTTnDnAcsX_H-K9sy98OKvjGtpYSi-&index=1&t=443s"
+    START_TIME = "7:00"
+    try:
+        analyser = BasketballAnalyser(
+            model_path=MODEL_PATH,
+            video_source=VIDEO_SOURCE,
+            start_time=START_TIME
+        )
+        analyser.process_video()
+    except Exception as e:
+        print(f"An error occurred: {e}")
 
     """
        Run Basketball Analysis with the custom MOT_SIFT Tracker
     """
-
-    MODEL_PATH = "Basketball_Detection/yolov12n.pt_200_epochs_64_batch_size_augmented/weights/best.pt"
-    VIDEO_SOURCE = "https://www.youtube.com/watch?v=6OTIqjh0eKc&list=PLiVlTTnDnAcsX_H-K9sy98OKvjGtpYSi-&index=1&t=443s"
-    START_TIME = "7:00"
-
-    try:
-        # 1. Create an instance of your custom SIFT tracker
-        sift_tracker_config = MOT_SIFT(
-            detection_conf=0.4,
-            sift_good_dist=300.0,
-            min_sift_score=20.0,
-            accumulate_sift=3,
-            max_age=30
-        )
-
-        # 2. Create an instance of the BasketballAnalyser
-        #    and "inject" the sift_tracker into it.
-        analyser = BasketballAnalyser(
-            model_path=MODEL_PATH,  # Still needed for the fallback
-            video_source=VIDEO_SOURCE,
-            start_time=START_TIME,
-            tracker_config=sift_tracker_config  # <-- FEED THE TRACKER HERE
-        )
-
-        # 3. Run the analysis
-        analyser.process_video()
-
-    except Exception as e:
-        print(f"An error occurred: {e}")
+    #
+    # MODEL_PATH = "Basketball_Detection/yolov12n.pt_200_epochs_64_batch_size_augmented/weights/best.pt"
+    # VIDEO_SOURCE = "https://www.youtube.com/watch?v=6OTIqjh0eKc&list=PLiVlTTnDnAcsX_H-K9sy98OKvjGtpYSi-&index=1&t=443s"
+    # START_TIME = "7:00"
+    #
+    # try:
+    #     # 1. Create an instance of your custom SIFT tracker
+    #     sift_tracker_config = MOT_SIFT(
+    #         detection_conf=0.4,
+    #         sift_good_dist=300.0,
+    #         min_sift_score=20.0,
+    #         accumulate_sift=3,
+    #         max_age=30
+    #     )
+    #
+    #     # 2. Create an instance of the BasketballAnalyser
+    #     #    and "inject" the sift_tracker into it.
+    #     analyser = BasketballAnalyser(
+    #         model_path=MODEL_PATH,  # Still needed for the fallback
+    #         video_source=VIDEO_SOURCE,
+    #         start_time=START_TIME,
+    #         tracker_config=sift_tracker_config  # <-- FEED THE TRACKER HERE
+    #     )
+    #
+    #     # 3. Run the analysis
+    #     analyser.process_video()
+    #
+    # except Exception as e:
+    #     print(f"An error occurred: {e}")
