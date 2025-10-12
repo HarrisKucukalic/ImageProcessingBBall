@@ -3,10 +3,6 @@
 # Updated and refactored into a class structure.
 
 import numpy as np
-import cv2
-from ultralytics import YOLO
-import argparse
-import os
 
 # Helper functions are also from https://github.com/abhishek30-ml/Multiple-Object-Tracking/blob/main/mot.py
 from MOT_SIFT_SCRIPTS import initialise, matching, tracker, result
@@ -60,26 +56,26 @@ class MOT_SIFT:
             self.active_tracks, unmatches, des_list = matching.matching_assignment(
                 C, B, C2, B2, self.active_tracks, unmatches, des_list, frame_no, self.kf
             )
-        # Track Initialization and Update
+        # Track Initialisation and Update
         unmatches_track, self.next_id = initialise.new_track(unmatches, des_list, self.next_id, frame_no, self.kf)
 
         self.active_tracks, self.offline_tracks = tracker.update_track(self.active_tracks, unmatches_track,
                                                                        self.offline_tracks, self.kf, self.max_age)
 
-        # --- Format the output to match YOLO's .track() method ---
+        # Format the output to match YOLO's .track() method
         # The required format is a NumPy array of [x1, y1, x2, y2, track_id, conf, class_id]
         formatted_tracks = []
         for track in self.active_tracks:
             if track.frame and track.frame[-1] == frame_no:
-                # --- FIX: Convert from [xc, yc, ar, h] to xyxy ---
-                # 1. Get the measurement data
+                # Convert from [xc, yc, ar, h] to xyxy
+                # Get the measurement data
                 measurement = track.measurement[-1]
                 center_x, center_y, aspect_ratio, height = measurement
 
-                # 2. Re-calculate the width from the aspect ratio
+                # Re-calculate the width from the aspect ratio
                 width = aspect_ratio * height
 
-                # 3. Convert to xyxy
+                # Convert to xyxy
                 x1 = center_x - (width / 2)
                 y1 = center_y - (height / 2)
                 x2 = center_x + (width / 2)

@@ -27,7 +27,7 @@ def convert_csv_to_mot_format(csv_path, output_path):
         # Reset the index to turn 'frame', 'TeamID', and 'PlayerID' into columns
         long_df = long_df.reset_index()
 
-        # --- FIX: Filter out rows where the PlayerID is 'BALL' ---
+        # Filter out rows where the PlayerID is 'BALL'
         # This prevents the ValueError when trying to convert 'BALL' to an integer.
         long_df = long_df[long_df['PlayerID'] != 'BALL']
 
@@ -71,11 +71,10 @@ def convert_csv_to_mot_format(csv_path, output_path):
 
 
 if __name__ == "__main__":
-    # --- CONFIGURATION ---
-    # 1. The path to your input CSV file from the dataset
+    # The path to the CSV file from the dataset
     INPUT_CSV_PATH = "Q4_side_480-510.csv"
 
-    # 2. The desired output path for the converted ground truth file
+    # The desired output path for the converted ground truth file for MOTA, HOTA and IDF1
     OUTPUT_GT_PATH = "data/gt/gt.txt"
 
     convert_csv_to_mot_format(INPUT_CSV_PATH, OUTPUT_GT_PATH)

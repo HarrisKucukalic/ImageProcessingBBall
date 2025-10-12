@@ -2,26 +2,14 @@ import numpy as np
 import pandas as pd
 import os
 import cv2
-
-# --- Important Assumptions ---
-# 1. Your BasketballAnalyser class is in a file named `BasketballAnalyser.py`
-# 2. Your MOT_SIFT class is in a file named `MOT_SIFT.py`
-try:
-    from BasketballAnalyser import BasketballAnalyser
-    from MOT_SIFT import MOT_SIFT
-except ImportError as e:
-    print(
-        f"Error: Could not import necessary classes. Make sure 'BasketballAnalyser.py' and 'MOT_SIFT.py' are in the correct path.")
-    print(e)
-    exit()
+from BasketballAnalyser import BasketballAnalyser
+from MOT_SIFT import MOT_SIFT
 
 try:
     import yt_dlp
 except ImportError:
     yt_dlp = None
 
-
-# --- Manual Metric Calculation Functions (No motmetrics needed) ---
 
 def load_tracking_data(filepath):
     """Loads tracking data (ground truth or tracker output) into a dictionary.
@@ -81,7 +69,7 @@ def manual_evaluate_tracker(gt_path, ts_path, iou_threshold=0.5):
         print(f"Warning: Tracker file '{ts_path}' is empty.")
         return {'MOTA': 0, 'HOTA': 0, 'IDF1': 0}
 
-    # --- Initialize counters for metrics ---
+    # Initialise counters for metrics
     num_gt_objects = 0
     tp, fp, fn = 0, 0, 0
     id_switches = 0
@@ -111,7 +99,7 @@ def manual_evaluate_tracker(gt_path, ts_path, iou_threshold=0.5):
         ts_ids = [t[0] for t in ts_in_frame]
         ts_boxes = [t[1] for t in ts_in_frame]
 
-        # --- Frame-level matching ---
+        # Frame-level matching
         matches = []
         if gt_in_frame and ts_in_frame:
             iou_matrix = np.zeros((len(gt_boxes), len(ts_boxes)))
@@ -137,7 +125,7 @@ def manual_evaluate_tracker(gt_path, ts_path, iou_threshold=0.5):
 
                 iou_matrix[gt_idx, ts_idx] = 0  # Mark as used
 
-        # --- Update TP, FP, FN ---
+        # Update TP, FP, FN
         frame_tp = len(matches)
         frame_fn = len(gt_ids) - frame_tp
         frame_fp = len(ts_ids) - frame_tp
@@ -146,27 +134,27 @@ def manual_evaluate_tracker(gt_path, ts_path, iou_threshold=0.5):
         fn += frame_fn
         fp += frame_fp
 
-        # --- Update ID Switches ---
+        # Update ID Switches
         current_matches_ts_gt = {ts_id: gt_id for gt_id, ts_id in matches}
         for ts_id, gt_id in current_matches_ts_gt.items():
             if ts_id in prev_matches and prev_matches[ts_id] != gt_id:
                 id_switches += 1
         prev_matches = current_matches_ts_gt
 
-        # --- Accumulate data for HOTA's Association score ---
+        # Accumulate data for HOTA's Association score
         for gt_id, ts_id in matches:
             gt_to_ts_matches.setdefault(gt_id, []).append(ts_id)
             ts_to_gt_matches.setdefault(ts_id, []).append(gt_id)
 
-    # --- Final Metric Calculations ---
+    # Final Metric Calculations
 
-    # 1. MOTA
+    # MOTA
     mota = 1.0 - ((fn + fp + id_switches) / num_gt_objects) if num_gt_objects > 0 else 0.0
 
-    # 2. IDF1
+    # IDF1
     idf1 = (2 * tp) / (2 * tp + fp + fn) if (2 * tp + fp + fn) > 0 else 0.0
 
-    # 3. HOTA
+    # HOTA
     if tp > 0:
         # Calculate Detection Accuracy (DetA)
         det_a = tp / (tp + fn + fp)
@@ -206,7 +194,7 @@ def run_tracker_and_save(model_path, video_source, tracker_config, output_file_p
     Handles YouTube URLs and processes video between start_time and end_time.
     """
     tracker_name_to_print = tracker_config if tracker_config != 'custom' else 'MOT-SIFT'
-    print(f"--- Running analysis for tracker: {tracker_name_to_print} ---")
+    print(f"Running analysis for tracker: {tracker_name_to_print}")
 
     if tracker_config == 'custom':
         tracker_to_run = MOT_SIFT(
@@ -323,12 +311,12 @@ def calculate_track_stability_metrics(ts_path):
 
 
 if __name__ == "__main__":
-    # --- 1. CONFIGURATION ---
+    # Use the best performing object detector - YOLOv12n
     MODEL_PATH = "Basketball_Detection/yolov12n.pt_200_epochs_64_batch_size_augmented/weights/best.pt"
     VIDEO_SOURCE = "Q4_side_480-510.mp4"
     GT_FILE_PATH = "data/gt/gt.txt"
 
-    # Time segment for the local 30-second video clip
+    # Time segment for the 30-second video clip with ground truth tracking data
     START_TIME = "0:00"
     END_TIME = "0:30"
 
@@ -343,14 +331,14 @@ if __name__ == "__main__":
 
     TRACKER_FILES = {name: os.path.join(OUTPUT_DIR, f"{name.lower()}.txt") for name in TRACKER_CONFIGS}
 
-    # --- 2. RUN TRACKERS TO GENERATE OUTPUT FILES ---
-    # print("--- Step 1: Generating Tracker Output Files ---")
+    # Run Trackers to generate output CSVs
+    # print("Generating Tracker Output Files")
     # for tracker_name, tracker_config in TRACKER_CONFIGS.items():
     #     output_path = TRACKER_FILES[tracker_name]
     #     run_tracker_and_save(MODEL_PATH, VIDEO_SOURCE, tracker_config, output_path, START_TIME, END_TIME)
 
-    # --- 3. RUN EVALUATION ON THE GENERATED FILES ---
-    print("\n--- Step 2: Evaluating Tracker Performance ---")
+    # Run evaluations on the outputted CSVs
+    print("\nEvaluating Tracker Performance")
     all_results = {}
     for tracker_name, tracker_path in TRACKER_FILES.items():
         if not os.path.exists(tracker_path):
@@ -358,8 +346,6 @@ if __name__ == "__main__":
             continue
 
         print(f"Evaluating {tracker_name}...")
-
-        # *** Use the new manual evaluation function ***
         metrics = manual_evaluate_tracker(GT_FILE_PATH, tracker_path)
 
         mean_tracks, variance_tracks = calculate_track_stability_metrics(tracker_path)
@@ -369,7 +355,7 @@ if __name__ == "__main__":
         all_results[tracker_name] = metrics
         print(f"Finished evaluating {tracker_name}.")
 
-    # --- 4. DISPLAY FINAL RESULTS ---
+    # Print MOTA, HOTA and IDF1
     if all_results:
         results_df = pd.DataFrame.from_dict(all_results, orient='index')
         pd.options.display.float_format = '{:.3f}'.format
